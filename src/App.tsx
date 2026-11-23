@@ -1,0 +1,1782 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { User } from 'firebase/auth';
+import {
+  initAuth,
+  googleSignIn,
+  logout
+} from './services/auth';
+import {
+  OfficeAsset,
+  AssetTransaction,
+  WorkspaceConfig,
+  MaintenanceRecord,
+  StockOpnameSession,
+  DisposalRecord,
+  AssetCondition,
+  MasterBuildingLocation,
+  MasterVendor,
+  MasterCompanySettings,
+  AppUserAccount
+} from './types';
+import {
+  INITIAL_OFFICE_ASSETS,
+  INITIAL_TRANSACTIONS,
+  INITIAL_MAINTENANCE_RECORDS,
+  INITIAL_STOCK_OPNAME_SESSIONS,
+  INITIAL_DISPOSAL_RECORDS,
+  INITIAL_BUILDING_LOCATIONS,
+  INITIAL_VENDORS,
+  INITIAL_COMPANY_SETTINGS
+} from './data/mockInitialData';
+import {
+  KODE_DIVISI_LIST,
+  KODE_SUB_KELOMPOK_LIST,
+  CodeItem
+} from './data/assetCodeGenerator';
+import { Navbar, AppTab } from './components/Navbar';
+import {
+  MobileTopBar,
+  MobileBottomBar,
+  MobileMenuSheet
+} from './components/MobileNavigation';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { DashboardKPI } from './components/DashboardKPI';
+import { AssetList } from './components/AssetList';
+import { TransactionModal } from './components/TransactionModal';
+import { AddAssetModal } from './components/AddAssetModal';
+import { EditAssetModal } from './components/EditAssetModal';
+import { TransactionHistory } from './components/TransactionHistory';
+import { ReportsView } from './components/ReportsView';
+import { MaintenanceView } from './components/MaintenanceView';
+import { StockOpnameView } from './components/StockOpnameView';
+import { DisposalView } from './components/DisposalView';
+import { MasterSettingsView } from './components/MasterSettingsView';
+import { GoogleWorkspaceSettings } from './components/GoogleWorkspaceSettings';
+import { PhotoViewerModal } from './components/PhotoViewerModal';
+import { AssetLabelModal } from './components/AssetLabelModal';
+import { BarcodeScannerModal } from './components/BarcodeScannerModal';
+import { BastModal } from './components/BastModal';
+import { DepreciationCalculatorModal } from './components/DepreciationCalculatorModal';
+import { BatchLabelModal } from './components/BatchLabelModal';
+import { BatchImportModal } from './components/BatchImportModal';
+import { WarrantyAlertsBanner } from './components/WarrantyAlertsBanner';
+import { AuthDomainHelpModal } from './components/AuthDomainHelpModal';
+import { SpreadsheetLoginView } from './components/SpreadsheetLoginView';
+import {
+  SpreadsheetConfirmModal,
+  SpreadsheetConfirmAction
+} from './components/SpreadsheetConfirmModal';
+import {
+  findDatabaseSpreadsheet,
+  createDatabaseSpreadsheet,
+  saveFullDatabaseToSpreadsheet,
+  loadFullDatabaseFromSpreadsheet,
+  fetchUsersFromSpreadsheet,
+  FullSpreadsheetDatabase
+} from './services/sheetsService';
+import { CheckCircle2, AlertCircle, Monitor, Smartphone, Laptop, ShieldAlert } from 'lucide-react';
+
+const LOCAL_STORAGE_ASSETS_KEY = 'aset_kantor_assets_v3';
+const LOCAL_STORAGE_TRX_KEY = 'aset_kantor_trx_v3';
+const LOCAL_STORAGE_MTC_KEY = 'aset_kantor_mtc_v3';
+const LOCAL_STORAGE_SO_KEY = 'aset_kantor_so_v3';
+const LOCAL_STORAGE_DSP_KEY = 'aset_kantor_dsp_v3';
+const LOCAL_STORAGE_LOC_KEY = 'aset_kantor_loc_v3';
+const LOCAL_STORAGE_VND_KEY = 'aset_kantor_vnd_v3';
+const LOCAL_STORAGE_COMPANY_KEY = 'aset_kantor_company_v3';
+const LOCAL_STORAGE_DIV_KEY = 'aset_kantor_div_v3';
+const LOCAL_STORAGE_SUB_KEY = 'aset_kantor_sub_v3';
+const LOCAL_STORAGE_USERS_KEY = 'aset_kantor_users_v3';
+const LOCAL_STORAGE_CONFIG_KEY = 'aset_kantor_config_v3';
+const LOCAL_STORAGE_VIEW_MODE_KEY = 'aset_kantor_view_mode';
+
+type ViewMode = 'auto' | 'web' | 'mobile';
+
+export default function App() {
+  // Navigation Tabs: 'assets' | 'transactions' | 'opname' | 'maintenance' | 'disposal' | 'reports' | 'settings' | 'workspace'
+  const [currentTab, setCurrentTab] = useState<AppTab>('assets');
+
+  // Dual Experience Mode: Auto (responsive), Web Desktop, or Mobile App
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_VIEW_MODE_KEY);
+      if (saved === 'web' || saved === 'mobile' || saved === 'auto') return saved;
+    } catch {}
+    return 'auto';
+  });
+  const [isViewportMobile, setIsViewportMobile] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 1024 : false
+  );
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const isForcedMobilePreview = !isViewportMobile && viewMode === 'mobile';
+  const effectiveIsMobile = viewMode === 'mobile' || (viewMode === 'auto' && isViewportMobile);
+
+  // Authentication State (Google Workspace OAuth + Spreadsheet App User Session in memory)
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [currentAppUser, setCurrentAppUser] = useState<AppUserAccount | null>(null);
+  const [isSyncingUsers, setIsSyncingUsers] = useState(false);
+
+  const [appUsers, setAppUsers] = useState<AppUserAccount[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_USERS_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Asset, Transaction, Maintenance, Stock Opname, and Disposal Data
+  const [assets, setAssets] = useState<OfficeAsset[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_ASSETS_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_OFFICE_ASSETS;
+    } catch {
+      return INITIAL_OFFICE_ASSETS;
+    }
+  });
+
+  const [transactions, setTransactions] = useState<AssetTransaction[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_TRX_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
+    } catch {
+      return INITIAL_TRANSACTIONS;
+    }
+  });
+
+  const [maintenanceRecords, setMaintenanceRecords] = useState<MaintenanceRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_MTC_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_MAINTENANCE_RECORDS;
+    } catch {
+      return INITIAL_MAINTENANCE_RECORDS;
+    }
+  });
+
+  const [stockOpnameSessions, setStockOpnameSessions] = useState<StockOpnameSession[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_SO_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_STOCK_OPNAME_SESSIONS;
+    } catch {
+      return INITIAL_STOCK_OPNAME_SESSIONS;
+    }
+  });
+
+  const [disposalRecords, setDisposalRecords] = useState<DisposalRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_DSP_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_DISPOSAL_RECORDS;
+    } catch {
+      return INITIAL_DISPOSAL_RECORDS;
+    }
+  });
+
+  // Master Data: Building Locations, Vendors, Company Settings, Custom Divisions, and Sub Kelompoks
+  const [locations, setLocations] = useState<MasterBuildingLocation[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_LOC_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_BUILDING_LOCATIONS;
+    } catch {
+      return INITIAL_BUILDING_LOCATIONS;
+    }
+  });
+
+  const [vendors, setVendors] = useState<MasterVendor[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_VND_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_VENDORS;
+    } catch {
+      return INITIAL_VENDORS;
+    }
+  });
+
+  const [companySettings, setCompanySettings] = useState<MasterCompanySettings>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_COMPANY_KEY);
+      return saved ? JSON.parse(saved) : INITIAL_COMPANY_SETTINGS;
+    } catch {
+      return INITIAL_COMPANY_SETTINGS;
+    }
+  });
+
+  const [customDivisions, setCustomDivisions] = useState<CodeItem[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_DIV_KEY);
+      return saved ? JSON.parse(saved) : KODE_DIVISI_LIST;
+    } catch {
+      return KODE_DIVISI_LIST;
+    }
+  });
+
+  const [customSubKelompoks, setCustomSubKelompoks] = useState<CodeItem[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_SUB_KEY);
+      return saved ? JSON.parse(saved) : KODE_SUB_KELOMPOK_LIST;
+    } catch {
+      return KODE_SUB_KELOMPOK_LIST;
+    }
+  });
+
+  // Google Workspace Configuration
+  const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_CONFIG_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      spreadsheetId: null,
+      spreadsheetName: 'AsetKantor_Database_Inventaris',
+      spreadsheetUrl: null,
+      driveFolderId: null,
+      driveFolderName: 'AsetKantor_Dokumentasi_Foto',
+      notificationEmail: '',
+      autoSendEmailOnLoan: true,
+      autoSendEmailOnDamage: true,
+      autoSendEmailOnLowStock: true,
+      lowStockThreshold: 1,
+    };
+  });
+
+  // Sync state & Spreadsheet Database confirmation
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [pendingSheetAction, setPendingSheetAction] = useState<SpreadsheetConfirmAction | null>(null);
+  const skipNextAutoSyncRef = useRef(false);
+  const hasAutoSyncMountedRef = useRef(false);
+  const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
+
+  // Filters
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<string | null>(null);
+
+  // Modals
+  const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
+  const [selectedAssetForTrx, setSelectedAssetForTrx] = useState<OfficeAsset | null>(null);
+  const [isAddAssetModalOpen, setIsAddAssetModalOpen] = useState(false);
+  const [isBatchLabelModalOpen, setIsBatchLabelModalOpen] = useState(false);
+  const [isBatchImportModalOpen, setIsBatchImportModalOpen] = useState(false);
+
+  const [photoViewer, setPhotoViewer] = useState<{ isOpen: boolean; url: string | null; title: string }>({
+    isOpen: false,
+    url: null,
+    title: '',
+  });
+
+  // Modals: Label/QR, Scanner, BAST, Depreciation, Edit Asset
+  const [isLabelModalOpen, setIsLabelModalOpen] = useState(false);
+  const [selectedAssetForLabel, setSelectedAssetForLabel] = useState<OfficeAsset | null>(null);
+
+  const [isScanModalOpen, setIsScanModalOpen] = useState(false);
+  const [initialScanQuery, setInitialScanQuery] = useState<string | null>(null);
+  const [authHelpModal, setAuthHelpModal] = useState<{ isOpen: boolean; code: string; message: string }>({
+    isOpen: false,
+    code: '',
+    message: '',
+  });
+
+  const [isBastModalOpen, setIsBastModalOpen] = useState(false);
+  const [selectedTrxForBast, setSelectedTrxForBast] = useState<AssetTransaction | null>(null);
+
+  const [isDepreciationModalOpen, setIsDepreciationModalOpen] = useState(false);
+  const [selectedAssetForDepreciation, setSelectedAssetForDepreciation] = useState<OfficeAsset | null>(null);
+
+  const [isEditAssetModalOpen, setIsEditAssetModalOpen] = useState(false);
+  const [selectedAssetForEdit, setSelectedAssetForEdit] = useState<OfficeAsset | null>(null);
+
+  // Persistence to LocalStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_ASSETS_KEY, JSON.stringify(assets));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [assets]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_TRX_KEY, JSON.stringify(transactions));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [transactions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_MTC_KEY, JSON.stringify(maintenanceRecords));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [maintenanceRecords]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_SO_KEY, JSON.stringify(stockOpnameSessions));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [stockOpnameSessions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_DSP_KEY, JSON.stringify(disposalRecords));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [disposalRecords]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_LOC_KEY, JSON.stringify(locations));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [locations]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_VND_KEY, JSON.stringify(vendors));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [vendors]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_COMPANY_KEY, JSON.stringify(companySettings));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [companySettings]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_DIV_KEY, JSON.stringify(customDivisions));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [customDivisions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_SUB_KEY, JSON.stringify(customSubKelompoks));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [customSubKelompoks]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_USERS_KEY, JSON.stringify(appUsers));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [appUsers]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_CONFIG_KEY, JSON.stringify(workspaceConfig));
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e);
+    }
+  }, [workspaceConfig]);
+
+  // Toast Auto-dismiss
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
+
+  // Persist View Mode & Track Responsive Viewport
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_VIEW_MODE_KEY, viewMode);
+    } catch {}
+  }, [viewMode]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsViewportMobile(window.innerWidth < 1024);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Open scanned asset automatically if opened from QR link (?asset=...)
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const assetParam = params.get('asset');
+      if (assetParam) {
+        setInitialScanQuery(window.location.search);
+        setIsScanModalOpen(true);
+      }
+    } catch {}
+  }, []);
+
+  // Initialize Firebase Auth
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (currentUser, accessToken) => {
+        setUser(currentUser);
+        setToken(accessToken);
+        setIsAuthLoading(false);
+      },
+      () => {
+        setUser(null);
+        setToken(null);
+        setIsAuthLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Build Full 11-Tab Database Payload
+  const buildFullDatabasePayload = useCallback(
+    (): FullSpreadsheetDatabase => ({
+      assets,
+      transactions,
+      maintenanceRecords,
+      stockOpnameSessions,
+      disposalRecords,
+      locations,
+      vendors,
+      customDivisions,
+      customSubKelompoks,
+      companySettings,
+      users: appUsers,
+    }),
+    [
+      assets,
+      transactions,
+      maintenanceRecords,
+      stockOpnameSessions,
+      disposalRecords,
+      locations,
+      vendors,
+      customDivisions,
+      customSubKelompoks,
+      companySettings,
+      appUsers,
+    ]
+  );
+
+  // Read-only fetch of Master_Pengguna from Google Spreadsheet
+  const handleRefreshUsersFromSheet = useCallback(
+    async (overrideToken?: string, overrideSheetId?: string): Promise<AppUserAccount[]> => {
+      const tk = overrideToken || token;
+      const sid = overrideSheetId || workspaceConfig.spreadsheetId;
+      if (!tk || !sid) {
+        setToastMessage({
+          type: 'info',
+          text: 'Hubungkan akun Google dan tautkan ID Spreadsheet terlebih dahulu.',
+        });
+        return [];
+      }
+
+      setIsSyncingUsers(true);
+      try {
+        const loadedUsers = await fetchUsersFromSpreadsheet(tk, sid);
+        if (loadedUsers.length > 0) {
+          skipNextAutoSyncRef.current = true;
+          setAppUsers(loadedUsers);
+          setToastMessage({
+            type: 'success',
+            text: `Berhasil memuat ${loadedUsers.length} akun pengguna dari tab Master_Pengguna.`,
+          });
+        } else {
+          setToastMessage({
+            type: 'info',
+            text: 'Tab Master_Pengguna di Spreadsheet masih kosong.',
+          });
+        }
+        return loadedUsers;
+      } catch (err: any) {
+        setToastMessage({
+          type: 'error',
+          text: err?.message || 'Gagal membaca daftar user dari Spreadsheet.',
+        });
+        return [];
+      } finally {
+        setIsSyncingUsers(false);
+      }
+    },
+    [token, workspaceConfig.spreadsheetId]
+  );
+
+  // Sign In Handler (+ Auto-Discover Existing Database Spreadsheet + Read Users)
+  const handleSignIn = async () => {
+    try {
+      const res = await googleSignIn();
+      setUser(res.user);
+      setToken(res.accessToken);
+      setAuthHelpModal({ isOpen: false, code: '', message: '' });
+
+      let targetSheetId = workspaceConfig.spreadsheetId;
+
+      if (!targetSheetId && res.accessToken) {
+        try {
+          const found = await findDatabaseSpreadsheet(res.accessToken);
+          if (found) {
+            targetSheetId = found.spreadsheetId;
+            setWorkspaceConfig((prev) => ({
+              ...prev,
+              spreadsheetId: found.spreadsheetId,
+              spreadsheetUrl: found.spreadsheetUrl,
+              spreadsheetName: found.name,
+            }));
+            setPendingSheetAction('pull_full_db');
+          }
+        } catch (driveErr) {
+          console.warn('Auto-discover spreadsheet skipped:', driveErr);
+        }
+      }
+
+      if (targetSheetId && res.accessToken) {
+        await handleRefreshUsersFromSheet(res.accessToken, targetSheetId);
+      } else {
+        setToastMessage({
+          type: 'success',
+          text: `Berhasil terhubung dengan Google Workspace (${res.user.email})`,
+        });
+      }
+    } catch (err: any) {
+      const code = err?.code || 'auth/error';
+      const msg = err?.message || 'Gagal masuk dengan Google OAuth';
+      setToastMessage({
+        type: 'error',
+        text: msg,
+      });
+
+      if (
+        code === 'auth/unauthorized-domain' ||
+        code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-allowed' ||
+        code === 'auth/missing-token'
+      ) {
+        setAuthHelpModal({
+          isOpen: true,
+          code,
+          message: msg,
+        });
+      }
+    }
+  };
+
+  // App User Session Handlers (Spreadsheet-backed Login)
+  const handleAppLoginSuccess = (account: AppUserAccount) => {
+    skipNextAutoSyncRef.current = false;
+    setAppUsers((prev) =>
+      prev.map((u) => (u.id === account.id ? { ...u, lastLoginAt: account.lastLoginAt } : u))
+    );
+    setCurrentAppUser(account);
+    setToastMessage({
+      type: 'success',
+      text: `Selamat datang, ${account.fullName} (${account.role.replace('_', ' ')})!`,
+    });
+  };
+
+  const handleActivateInvitedUser = (account: AppUserAccount) => {
+    setAppUsers((prev) => prev.map((u) => (u.id === account.id ? account : u)));
+    setCurrentAppUser(account);
+    if (token && workspaceConfig.spreadsheetId && !workspaceConfig.autoSyncSpreadsheet) {
+      setPendingSheetAction('push_full_db');
+    }
+    setToastMessage({
+      type: 'success',
+      text: `Akun "${account.username}" berhasil diaktifkan!`,
+    });
+  };
+
+  const handleFirstSuperAdminCreated = (account: AppUserAccount) => {
+    setAppUsers([account]);
+    setCurrentAppUser(account);
+    if (token && !workspaceConfig.autoSyncSpreadsheet) {
+      setPendingSheetAction(workspaceConfig.spreadsheetId ? 'push_full_db' : 'create_db');
+    }
+    setToastMessage({
+      type: 'success',
+      text: `Akun Super Admin "${account.username}" berhasil dibuat!`,
+    });
+  };
+
+  const handleAppLogout = () => {
+    setCurrentAppUser(null);
+    setCurrentTab('assets');
+    setToastMessage({
+      type: 'info',
+      text: 'Anda telah keluar dari akun aplikasi.',
+    });
+  };
+
+  // Sign Out Handler
+  const handleSignOut = async () => {
+    try {
+      await logout();
+      setUser(null);
+      setToken(null);
+      setToastMessage({
+        type: 'info',
+        text: 'Sesi Google telah diputus.',
+      });
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  // Find Existing Spreadsheet on Drive
+  const handleFindExistingSpreadsheet = useCallback(async () => {
+    if (!token) {
+      setToastMessage({
+        type: 'info',
+        text: 'Silakan hubungkan akun Google terlebih dahulu.',
+      });
+      return;
+    }
+
+    const found = await findDatabaseSpreadsheet(token);
+    if (!found) {
+      setToastMessage({
+        type: 'info',
+        text: 'Belum ditemukan file Spreadsheet AsetKantor_Database_Inventaris di Google Drive Anda. Klik "Buat Database Spreadsheet Baru" untuk membuatnya.',
+      });
+      return;
+    }
+
+    setWorkspaceConfig((prev) => ({
+      ...prev,
+      spreadsheetId: found.spreadsheetId,
+      spreadsheetUrl: found.spreadsheetUrl,
+      spreadsheetName: found.name,
+    }));
+    setPendingSheetAction('pull_full_db');
+  }, [token]);
+
+  // Execute Confirmed Spreadsheet Action (Create / Push / Pull / Enable Auto-Sync)
+  const executeConfirmedSpreadsheetAction = useCallback(async () => {
+    if (!token || !pendingSheetAction) return;
+
+    setIsSyncing(true);
+    try {
+      const dbPayload = buildFullDatabasePayload();
+
+      if (pendingSheetAction === 'create_db') {
+        const dbTitle =
+          workspaceConfig.spreadsheetName ||
+          `AsetKantor_Database_Inventaris_${new Date().getFullYear()}`;
+        const created = await createDatabaseSpreadsheet(token, dbTitle);
+        await saveFullDatabaseToSpreadsheet(token, created.spreadsheetId, dbPayload);
+        const nowIso = new Date().toISOString();
+        skipNextAutoSyncRef.current = true;
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          spreadsheetId: created.spreadsheetId,
+          spreadsheetUrl: created.spreadsheetUrl,
+          spreadsheetName: dbTitle,
+          autoSyncSpreadsheet: true,
+          lastSyncedAt: nowIso,
+        }));
+        setToastMessage({
+          type: 'success',
+          text: `Database Google Spreadsheet "${dbTitle}" (11 tab) berhasil dibuat & mode Auto-Sync aktif!`,
+        });
+      } else if (pendingSheetAction === 'push_full_db') {
+        let targetId = workspaceConfig.spreadsheetId;
+        let targetUrl = workspaceConfig.spreadsheetUrl;
+        if (!targetId) {
+          const created = await createDatabaseSpreadsheet(token, 'AsetKantor_Database_Inventaris');
+          targetId = created.spreadsheetId;
+          targetUrl = created.spreadsheetUrl;
+        }
+        await saveFullDatabaseToSpreadsheet(token, targetId, dbPayload);
+        const nowIso = new Date().toISOString();
+        skipNextAutoSyncRef.current = true;
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          spreadsheetId: targetId,
+          spreadsheetUrl: targetUrl,
+          lastSyncedAt: nowIso,
+        }));
+        setToastMessage({
+          type: 'success',
+          text: 'Seluruh 11 tab database berhasil disimpan ke Google Spreadsheet!',
+        });
+      } else if (pendingSheetAction === 'enable_auto_sync') {
+        let targetId = workspaceConfig.spreadsheetId;
+        let targetUrl = workspaceConfig.spreadsheetUrl;
+        const dbTitle =
+          workspaceConfig.spreadsheetName ||
+          `AsetKantor_Database_Inventaris_${new Date().getFullYear()}`;
+        if (!targetId) {
+          const created = await createDatabaseSpreadsheet(token, dbTitle);
+          targetId = created.spreadsheetId;
+          targetUrl = created.spreadsheetUrl;
+        }
+        await saveFullDatabaseToSpreadsheet(token, targetId, dbPayload);
+        const nowIso = new Date().toISOString();
+        skipNextAutoSyncRef.current = true;
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          spreadsheetId: targetId,
+          spreadsheetUrl: targetUrl,
+          spreadsheetName: dbTitle,
+          autoSyncSpreadsheet: true,
+          lastSyncedAt: nowIso,
+        }));
+        setToastMessage({
+          type: 'success',
+          text: 'Google Spreadsheet resmi aktif sebagai database utama (Auto-Sync aktif)!',
+        });
+      } else if (pendingSheetAction === 'pull_full_db') {
+        if (!workspaceConfig.spreadsheetId) {
+          throw new Error('ID Google Spreadsheet belum ditautkan.');
+        }
+        const loaded = await loadFullDatabaseFromSpreadsheet(
+          token,
+          workspaceConfig.spreadsheetId
+        );
+        skipNextAutoSyncRef.current = true;
+        if (loaded.assets) setAssets(loaded.assets);
+        if (loaded.transactions) setTransactions(loaded.transactions);
+        if (loaded.maintenanceRecords) setMaintenanceRecords(loaded.maintenanceRecords);
+        if (loaded.stockOpnameSessions) setStockOpnameSessions(loaded.stockOpnameSessions);
+        if (loaded.disposalRecords) setDisposalRecords(loaded.disposalRecords);
+        if (loaded.locations) setLocations(loaded.locations);
+        if (loaded.vendors) setVendors(loaded.vendors);
+        if (loaded.customDivisions) setCustomDivisions(loaded.customDivisions);
+        if (loaded.customSubKelompoks) setCustomSubKelompoks(loaded.customSubKelompoks);
+        if (loaded.companySettings) {
+          setCompanySettings((prev) => ({
+            ...prev,
+            ...loaded.companySettings,
+            logoUrl: loaded.companySettings?.logoUrl || prev.logoUrl,
+          }));
+        }
+        if (loaded.users && loaded.users.length > 0) {
+          setAppUsers(loaded.users);
+        }
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          lastSyncedAt: new Date().toISOString(),
+        }));
+        const assetCount = loaded.assets?.length ?? 0;
+        const trxCount = loaded.transactions?.length ?? 0;
+        setToastMessage({
+          type: 'success',
+          text: `Berhasil memuat database dari Google Spreadsheet (${assetCount} aset, ${trxCount} riwayat mutasi)!`,
+        });
+      }
+    } catch (err: any) {
+      console.error(err);
+      setToastMessage({
+        type: 'error',
+        text: err?.message || 'Gagal memproses operasi Google Spreadsheet.',
+      });
+    } finally {
+      setIsSyncing(false);
+      setPendingSheetAction(null);
+    }
+  }, [
+    token,
+    pendingSheetAction,
+    buildFullDatabasePayload,
+    workspaceConfig.spreadsheetId,
+    workspaceConfig.spreadsheetUrl,
+    workspaceConfig.spreadsheetName,
+  ]);
+
+  // Debounced Real-Time Auto-Sync to 10-Tab Google Spreadsheet
+  useEffect(() => {
+    if (!hasAutoSyncMountedRef.current) {
+      hasAutoSyncMountedRef.current = true;
+      return;
+    }
+    if (!token || !workspaceConfig.spreadsheetId || !workspaceConfig.autoSyncSpreadsheet) {
+      return;
+    }
+    if (skipNextAutoSyncRef.current) {
+      skipNextAutoSyncRef.current = false;
+      return;
+    }
+
+    const targetSheetId = workspaceConfig.spreadsheetId;
+    const payload = buildFullDatabasePayload();
+
+    const timer = setTimeout(async () => {
+      try {
+        setIsSyncing(true);
+        await saveFullDatabaseToSpreadsheet(token, targetSheetId, payload);
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          lastSyncedAt: new Date().toISOString(),
+        }));
+      } catch (err) {
+        console.warn('Auto-sync Google Spreadsheet gagal:', err);
+      } finally {
+        setIsSyncing(false);
+      }
+    }, 1200);
+
+    return () => clearTimeout(timer);
+  }, [
+    token,
+    workspaceConfig.spreadsheetId,
+    workspaceConfig.autoSyncSpreadsheet,
+    buildFullDatabasePayload,
+  ]);
+
+  // Manual Sync Trigger (opens explicit confirmation modal)
+  const handleManualSync = useCallback(async () => {
+    if (!token) {
+      setCurrentTab('workspace');
+      setToastMessage({
+        type: 'info',
+        text: 'Silakan hubungkan akun Google untuk sinkronisasi Google Spreadsheet.',
+      });
+      return;
+    }
+    setPendingSheetAction(workspaceConfig.spreadsheetId ? 'push_full_db' : 'create_db');
+  }, [token, workspaceConfig.spreadsheetId]);
+
+  // Pull Trigger (opens explicit confirmation modal)
+  const handlePullFromSheet = useCallback(async () => {
+    if (!token || !workspaceConfig.spreadsheetId) {
+      setToastMessage({
+        type: 'info',
+        text: 'Hubungkan akun Google dan isi ID Spreadsheet terlebih dahulu.',
+      });
+      return;
+    }
+    setPendingSheetAction('pull_full_db');
+  }, [token, workspaceConfig.spreadsheetId]);
+
+  // Transaction Success Handler
+  const handleTransactionSuccess = (
+    updatedAsset: OfficeAsset,
+    newTransaction: AssetTransaction
+  ) => {
+    setAssets((prev) =>
+      prev.map((a) => (a.id === updatedAsset.id ? updatedAsset : a))
+    );
+    setTransactions((prev) => [newTransaction, ...prev]);
+
+    setToastMessage({
+      type: 'success',
+      text: `Mutasi ${newTransaction.type} berhasil dicatat! Stok diperbarui, bukti foto tersimpan di Google Drive, dan notifikasi email terproses.`,
+    });
+  };
+
+  // Add Asset Success Handler
+  const handleAssetAdded = (newAsset: OfficeAsset) => {
+    setAssets((prev) => [newAsset, ...prev]);
+    setToastMessage({
+      type: 'success',
+      text: `Aset baru "${newAsset.name}" (${newAsset.id}) berhasil didaftarkan ke inventaris kantor.`,
+    });
+  };
+
+  // Batch CSV Import Handler
+  const handleBatchImport = (importedAssets: OfficeAsset[]) => {
+    const combined = [...importedAssets, ...assets];
+    setAssets(combined);
+
+    setToastMessage({
+      type: 'success',
+      text: `Berhasil mengimpor ${importedAssets.length} aset baru ke dalam inventaris kantor!`,
+    });
+  };
+
+  // Edit Asset Handler
+  const handleSaveEditedAsset = (updatedAsset: OfficeAsset) => {
+    const updatedList = assets.map((a) => (a.id === updatedAsset.id ? updatedAsset : a));
+    setAssets(updatedList);
+
+    setToastMessage({
+      type: 'success',
+      text: `Perubahan data aset "${updatedAsset.name}" berhasil disimpan.`,
+    });
+  };
+
+  // Delete Asset Handler
+  const handleDeleteAsset = (assetId: string) => {
+    const updatedList = assets.filter((a) => a.id !== assetId);
+    setAssets(updatedList);
+
+    setToastMessage({
+      type: 'info',
+      text: `Aset ${assetId} telah dihapus dari inventaris kantor.`,
+    });
+  };
+
+  // Stock Opname Session Handlers
+  const handleAddStockOpnameSession = (newSession: StockOpnameSession) => {
+    setStockOpnameSessions((prev) => [newSession, ...prev]);
+    setToastMessage({
+      type: 'success',
+      text: `Sesi stock opname "${newSession.title}" berhasil dibuat!`,
+    });
+  };
+
+  const handleUpdateStockOpnameSession = (updatedSession: StockOpnameSession) => {
+    setStockOpnameSessions((prev) =>
+      prev.map((s) => (s.id === updatedSession.id ? updatedSession : s))
+    );
+  };
+
+  const handleReconcileAssets = (
+    reconciledList: { assetId: string; condition: AssetCondition; location: string }[]
+  ) => {
+    const updated = assets.map((a) => {
+      const match = reconciledList.find((r) => r.assetId === a.id);
+      if (match) {
+        return {
+          ...a,
+          condition: match.condition,
+          location: match.location,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return a;
+    });
+
+    setAssets(updated);
+
+    setToastMessage({
+      type: 'success',
+      text: `Berhasil merekonsiliasi ${reconciledList.length} aset dengan fisik di lapangan!`,
+    });
+  };
+
+  // Asset Disposal Handlers (BAPA)
+  const handleAddDisposal = (record: DisposalRecord, removeAssetFromStock: boolean) => {
+    setDisposalRecords((prev) => [record, ...prev]);
+
+    if (removeAssetFromStock) {
+      const updated = assets.map((a) => {
+        if (a.id === record.assetId) {
+          return {
+            ...a,
+            status: 'Nonaktif / Dihapus' as const,
+            availableStock: 0,
+            borrowedStock: 0,
+            notes: `${a.notes} [DIHAPUS VIA BAPA: ${record.documentNumber} - ${record.reason}]`,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return a;
+      });
+      setAssets(updated);
+    }
+
+    setToastMessage({
+      type: 'success',
+      text: `Berita Acara Penghapusan Aset (${record.documentNumber}) berhasil diterbitkan!`,
+    });
+  };
+
+  // Maintenance Handlers
+  const handleAddMaintenance = (newRecord: MaintenanceRecord) => {
+    setMaintenanceRecords((prev) => [newRecord, ...prev]);
+    setToastMessage({
+      type: 'success',
+      text: `Jadwal pemeliharaan "${newRecord.serviceType}" untuk ${newRecord.assetName} berhasil dibuat.`,
+    });
+  };
+
+  const handleCompleteMaintenance = (
+    recordId: string,
+    actualCost: number,
+    restoreAssetCondition: boolean
+  ) => {
+    const record = maintenanceRecords.find((r) => r.id === recordId);
+    if (!record) return;
+
+    setMaintenanceRecords((prev) =>
+      prev.map((r) =>
+        r.id === recordId
+          ? {
+              ...r,
+              status: 'Selesai',
+              actualCost,
+              completedDate: new Date().toISOString().split('T')[0],
+            }
+          : r
+      )
+    );
+
+    if (restoreAssetCondition) {
+      setAssets((prev) =>
+        prev.map((a) => {
+          if (a.id === record.assetId) {
+            const restoredDamaged = Math.max(0, a.damagedStock - 1);
+            return {
+              ...a,
+              condition: 'Baik',
+              status: 'Tersedia',
+              damagedStock: restoredDamaged,
+              availableStock: a.availableStock + 1,
+            };
+          }
+          return a;
+        })
+      );
+    }
+
+    setToastMessage({
+      type: 'success',
+      text: `Pemeliharaan aset ${record.assetName} ditandai selesai!`,
+    });
+  };
+
+  const canManageMaster =
+    !currentAppUser || currentAppUser.role === 'SUPER_ADMIN' || currentAppUser.role === 'ADMIN';
+  const canMutateAssets = !currentAppUser || currentAppUser.role !== 'AUDITOR';
+
+  // Modal Openers (with RBAC guards)
+  const handleOpenAddAsset = () => {
+    if (!canMutateAssets) {
+      setToastMessage({ type: 'info', text: 'Akun Auditor hanya memiliki akses lihat (Read-Only).' });
+      return;
+    }
+    setIsAddAssetModalOpen(true);
+  };
+
+  const handleOpenBatchImport = () => {
+    if (!canMutateAssets) {
+      setToastMessage({ type: 'info', text: 'Akun Auditor tidak dapat mengimpor data.' });
+      return;
+    }
+    setIsBatchImportModalOpen(true);
+  };
+
+  const handleOpenTransactionForAsset = (asset?: OfficeAsset) => {
+    if (!canMutateAssets) {
+      setToastMessage({ type: 'info', text: 'Akun Auditor tidak dapat mencatat mutasi aset.' });
+      return;
+    }
+    setSelectedAssetForTrx(asset || assets[0] || null);
+    setIsTransactionModalOpen(true);
+  };
+
+  const handleOpenLabelForAsset = (asset: OfficeAsset) => {
+    setSelectedAssetForLabel(asset);
+    setIsLabelModalOpen(true);
+  };
+
+  const handleOpenDepreciationForAsset = (asset: OfficeAsset) => {
+    setSelectedAssetForDepreciation(asset);
+    setIsDepreciationModalOpen(true);
+  };
+
+  const handleOpenEditForAsset = (asset: OfficeAsset) => {
+    if (!canMutateAssets) {
+      setToastMessage({ type: 'info', text: 'Akun Auditor hanya memiliki akses lihat (Read-Only).' });
+      return;
+    }
+    setSelectedAssetForEdit(asset);
+    setIsEditAssetModalOpen(true);
+  };
+
+  const handleOpenBastForTrx = (trx: AssetTransaction) => {
+    setSelectedTrxForBast(trx);
+    setIsBastModalOpen(true);
+  };
+
+  const handleQuickReturnFromTracker = (trx: AssetTransaction) => {
+    if (!canMutateAssets) {
+      setToastMessage({ type: 'info', text: 'Akun Auditor tidak dapat mencatat pengembalian.' });
+      return;
+    }
+    const targetAsset = assets.find((a) => a.id === trx.assetId) || assets[0];
+    setSelectedAssetForTrx(targetAsset);
+    setIsTransactionModalOpen(true);
+  };
+
+  const handleViewPhoto = (photoUrl: string, title: string) => {
+    setPhotoViewer({
+      isOpen: true,
+      url: photoUrl,
+      title,
+    });
+  };
+
+  const renderMainWorkspace = (isMobileLayout: boolean) => (
+    <>
+      {/* Proactive Warranty & Tax Expiration Alert Banner */}
+      <WarrantyAlertsBanner
+        assets={assets}
+        onSelectAsset={(asset) => {
+          handleOpenEditForAsset(asset);
+        }}
+      />
+
+      {/* KPI Dashboard */}
+      <DashboardKPI
+        assets={assets}
+        transactions={transactions}
+        hasToken={!!token}
+        spreadsheetUrl={workspaceConfig.spreadsheetUrl}
+        isSpreadsheetDbActive={Boolean(
+          token && workspaceConfig.spreadsheetId && workspaceConfig.autoSyncSpreadsheet
+        )}
+        onOpenWorkspace={() => setCurrentTab('workspace')}
+        onFilterStatus={(status) => {
+          setSelectedStatusFilter(status);
+          setCurrentTab('assets');
+        }}
+        selectedStatusFilter={selectedStatusFilter}
+        isMobileLayout={isMobileLayout}
+      />
+
+      {/* Tab 1: Inventaris Aset */}
+      {currentTab === 'assets' && (
+        <AssetList
+          assets={assets}
+          onOpenTransactionModal={handleOpenTransactionForAsset}
+          onOpenAddAssetModal={handleOpenAddAsset}
+          onViewPhoto={handleViewPhoto}
+          onOpenLabelModal={handleOpenLabelForAsset}
+          onOpenDepreciationModal={handleOpenDepreciationForAsset}
+          onOpenEditModal={handleOpenEditForAsset}
+          selectedStatusFilter={selectedStatusFilter}
+          onClearStatusFilter={() => setSelectedStatusFilter(null)}
+          isMobileLayout={isMobileLayout}
+        />
+      )}
+
+      {/* Tab 2: Riwayat Mutasi & Peminjaman */}
+      {currentTab === 'transactions' && (
+        <TransactionHistory
+          transactions={transactions}
+          assets={assets}
+          onViewPhoto={handleViewPhoto}
+          onOpenBast={handleOpenBastForTrx}
+          onQuickReturn={handleQuickReturnFromTracker}
+          token={token}
+        />
+      )}
+
+      {/* Tab 3: Stock Opname & Audit Fisik */}
+      {currentTab === 'opname' && (
+        <StockOpnameView
+          assets={assets}
+          sessions={stockOpnameSessions}
+          onAddSession={handleAddStockOpnameSession}
+          onUpdateSession={handleUpdateStockOpnameSession}
+          onReconcileAssets={handleReconcileAssets}
+          onOpenScanner={() => setIsScanModalOpen(true)}
+          companySettings={companySettings}
+        />
+      )}
+
+      {/* Tab 4: Jadwal Pemeliharaan & Servis Rutin */}
+      {currentTab === 'maintenance' && (
+        <MaintenanceView
+          assets={assets}
+          records={maintenanceRecords}
+          onAddRecord={handleAddMaintenance}
+          onCompleteRecord={handleCompleteMaintenance}
+          token={token}
+          currentUserEmail={user?.email || currentAppUser?.email || null}
+          vendors={vendors}
+        />
+      )}
+
+      {/* Tab 5: Penghapusan Aset Resmi (BAPA) */}
+      {currentTab === 'disposal' && (
+        canManageMaster ? (
+          <DisposalView
+            assets={assets}
+            records={disposalRecords}
+            onAddDisposal={handleAddDisposal}
+            companySettings={companySettings}
+          />
+        ) : (
+          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
+            <ShieldAlert className="w-8 h-8 text-amber-500 mx-auto" />
+            <h4 className="text-sm font-bold text-slate-900">Akses Khusus Admin / Super Admin</h4>
+            <p className="text-xs text-slate-500">Halaman Penghapusan Aset (BAPA) hanya tersedia untuk peran Admin dan Super Admin.</p>
+          </div>
+        )
+      )}
+
+      {/* Tab 6: Laporan & Analitik Real-Time */}
+      {currentTab === 'reports' && (
+        <ReportsView
+          assets={assets}
+          transactions={transactions}
+          maintenanceRecords={maintenanceRecords}
+          spreadsheetUrl={workspaceConfig.spreadsheetUrl}
+        />
+      )}
+
+      {/* Tab 7: Master Data & Pengaturan Aplikasi */}
+      {currentTab === 'settings' && (
+        canManageMaster ? (
+          <MasterSettingsView
+            locations={locations}
+            onAddLocation={(newLoc) => setLocations((prev) => [newLoc, ...prev])}
+            onUpdateLocation={(updated) => setLocations((prev) => prev.map((l) => (l.id === updated.id ? updated : l)))}
+            onDeleteLocation={(id) => setLocations((prev) => prev.filter((l) => l.id !== id))}
+            onImportLocations={(newLocs) => setLocations((prev) => [...newLocs, ...prev])}
+            vendors={vendors}
+            onAddVendor={(newVnd) => setVendors((prev) => [newVnd, ...prev])}
+            onUpdateVendor={(updated) => setVendors((prev) => prev.map((v) => (v.id === updated.id ? updated : v)))}
+            onDeleteVendor={(id) => setVendors((prev) => prev.filter((v) => v.id !== id))}
+            onImportVendors={(newVnds) => setVendors((prev) => [...newVnds, ...prev])}
+            companySettings={companySettings}
+            onUpdateCompanySettings={(cfg) => setCompanySettings(cfg)}
+            customDivisions={customDivisions}
+            onAddDivision={(div) => setCustomDivisions((prev) => [...prev, div])}
+            onUpdateDivision={(oldCode, updated) => setCustomDivisions((prev) => prev.map((d) => (d.code === oldCode ? updated : d)))}
+            onDeleteDivision={(code) => setCustomDivisions((prev) => prev.filter((d) => d.code !== code))}
+            onImportDivisions={(newDivs) => setCustomDivisions((prev) => [...newDivs, ...prev])}
+            customSubKelompoks={customSubKelompoks}
+            onAddSubKelompok={(sub) => setCustomSubKelompoks((prev) => [...prev, sub])}
+            onUpdateSubKelompok={(oldCode, updated) => setCustomSubKelompoks((prev) => prev.map((s) => (s.code === oldCode ? updated : s)))}
+            onDeleteSubKelompok={(code) => setCustomSubKelompoks((prev) => prev.filter((s) => s.code !== code))}
+            onImportSubKelompoks={(newSubs) => setCustomSubKelompoks((prev) => [...newSubs, ...prev])}
+            allData={{
+              assets,
+              transactions,
+              maintenanceRecords,
+              stockOpnameSessions,
+              disposalRecords,
+            }}
+            onRestoreAllData={(restored) => {
+              if (restored.assets) setAssets(restored.assets);
+              if (restored.transactions) setTransactions(restored.transactions);
+              if (restored.maintenanceRecords) setMaintenanceRecords(restored.maintenanceRecords);
+              if (restored.stockOpnameSessions) setStockOpnameSessions(restored.stockOpnameSessions);
+              if (restored.disposalRecords) setDisposalRecords(restored.disposalRecords);
+              if (restored.locations) setLocations(restored.locations);
+              if (restored.vendors) setVendors(restored.vendors);
+              if (restored.companySettings) setCompanySettings(restored.companySettings);
+              if (restored.customDivisions) setCustomDivisions(restored.customDivisions);
+              if (restored.customSubKelompoks) setCustomSubKelompoks(restored.customSubKelompoks);
+              if (restored.appUsers) setAppUsers(restored.appUsers);
+            }}
+            appUsers={appUsers}
+            currentAppUser={currentAppUser}
+            onAddAppUser={(newUsr) => setAppUsers((prev) => [...prev, newUsr])}
+            onUpdateAppUser={(updatedUsr) => {
+              setAppUsers((prev) => prev.map((u) => (u.id === updatedUsr.id ? updatedUsr : u)));
+              if (currentAppUser?.id === updatedUsr.id) {
+                setCurrentAppUser(updatedUsr);
+              }
+            }}
+            onDeleteAppUser={(usrId) => setAppUsers((prev) => prev.filter((u) => u.id !== usrId))}
+            hasSpreadsheetToken={Boolean(token)}
+            hasSpreadsheetId={Boolean(workspaceConfig.spreadsheetId)}
+            isSyncingUsers={isSyncingUsers}
+            onRefreshUsersFromSheet={() => handleRefreshUsersFromSheet().then(() => undefined)}
+            onPushUsersToSheet={() => setPendingSheetAction('push_full_db')}
+          />
+        ) : (
+          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
+            <ShieldAlert className="w-8 h-8 text-amber-500 mx-auto" />
+            <h4 className="text-sm font-bold text-slate-900">Akses Khusus Admin / Super Admin</h4>
+            <p className="text-xs text-slate-500">Pengaturan Master Data &amp; Akun Pengguna hanya tersedia untuk peran Admin dan Super Admin.</p>
+          </div>
+        )
+      )}
+
+      {/* Tab 8: Pengaturan Integrasi Google Workspace */}
+      {currentTab === 'workspace' && (
+        <GoogleWorkspaceSettings
+          user={user}
+          token={token}
+          onSignIn={handleSignIn}
+          workspaceConfig={workspaceConfig}
+          onUpdateConfig={(newCfg) => setWorkspaceConfig((prev) => ({ ...prev, ...newCfg }))}
+          assets={assets}
+          onSyncAll={handleManualSync}
+          onPullFromSheet={handlePullFromSheet}
+          onRequestSpreadsheetAction={(action) => setPendingSheetAction(action)}
+          onFindExistingSpreadsheet={handleFindExistingSpreadsheet}
+          onDisableAutoSync={() => {
+            setWorkspaceConfig((prev) => ({ ...prev, autoSyncSpreadsheet: false }));
+            setToastMessage({
+              type: 'info',
+              text: 'Auto-Sync real-time dimatikan. Anda masih bisa menyinkronkan manual kapan saja.',
+            });
+          }}
+          onOpenAuthHelp={() =>
+            setAuthHelpModal({
+              isOpen: true,
+              code: 'github-pages-oauth-checklist',
+              message: `Jika login gagal di ${typeof window !== 'undefined' ? window.location.hostname : 'GitHub Pages'}, pastikan domain & origin sudah didaftarkan di Firebase dan Google Cloud Console.`,
+            })
+          }
+          isSyncing={isSyncing}
+        />
+      )}
+    </>
+  );
+
+  const renderDesktopModeSwitcher = () => (
+    <div className="bg-white border-b border-slate-200 no-print">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs text-slate-600">
+          {effectiveIsMobile ? (
+            <Smartphone className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+          ) : (
+            <Monitor className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+          )}
+          <span>
+            Mode Tampilan:{' '}
+            <strong className="text-slate-900">
+              {isForcedMobilePreview
+                ? 'Versi Mobile (Preview Interaktif)'
+                : viewMode === 'web'
+                ? 'Versi Web Desktop'
+                : 'Otomatis (Web Desktop)'}
+            </strong>
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+          <button
+            type="button"
+            onClick={() => setViewMode('auto')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0 ${
+              viewMode === 'auto' ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Laptop className="w-3.5 h-3.5" />
+            <span>Otomatis</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('web')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0 ${
+              viewMode === 'web' ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Monitor className="w-3.5 h-3.5" />
+            <span>Versi Web</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('mobile')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0 ${
+              viewMode === 'mobile' ? 'bg-blue-600 text-white shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+            <span>Versi Mobile</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!currentAppUser) {
+    return (
+      <>
+        <OfflineIndicator />
+        {toastMessage && (
+          <div className="fixed bottom-5 right-5 z-50 max-w-md no-print">
+            <div
+              className={`flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-xs font-semibold border ${
+                toastMessage.type === 'success'
+                  ? 'bg-slate-900 text-emerald-400 border-emerald-500/40'
+                  : toastMessage.type === 'error'
+                  ? 'bg-rose-950 text-rose-200 border-rose-500/40'
+                  : 'bg-slate-900 text-blue-300 border-blue-500/40'
+              }`}
+            >
+              {toastMessage.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              )}
+              <span>{toastMessage.text}</span>
+            </div>
+          </div>
+        )}
+
+        <SpreadsheetLoginView
+          users={appUsers}
+          companySettings={companySettings}
+          workspaceConfig={workspaceConfig}
+          googleUser={user}
+          token={token}
+          isSyncingUsers={isSyncingUsers}
+          onGoogleConnectAndSync={handleSignIn}
+          onRefreshUsersFromSheet={() => handleRefreshUsersFromSheet().then(() => undefined)}
+          onUpdateSheetId={(rawId) => {
+            const cleanId = rawId.includes('/d/') ? rawId.split('/d/')[1].split('/')[0] : rawId.trim();
+            setWorkspaceConfig((prev) => ({
+              ...prev,
+              spreadsheetId: cleanId,
+              spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanId}/edit`,
+            }));
+            if (token) {
+              handleRefreshUsersFromSheet(token, cleanId);
+            }
+          }}
+          onLoginSuccess={handleAppLoginSuccess}
+          onActivateInvitedUser={handleActivateInvitedUser}
+          onFirstSuperAdminCreated={handleFirstSuperAdminCreated}
+          onOpenAuthHelp={() =>
+            setAuthHelpModal({
+              isOpen: true,
+              code: 'github-pages-oauth-checklist',
+              message: `Jika login gagal di ${typeof window !== 'undefined' ? window.location.hostname : 'GitHub Pages'}, pastikan domain & origin sudah didaftarkan di Firebase dan Google Cloud Console.`,
+            })
+          }
+          hasQrParam={Boolean(initialScanQuery)}
+          onOpenQrResult={() => setIsScanModalOpen(true)}
+        />
+
+        <AuthDomainHelpModal
+          isOpen={authHelpModal.isOpen}
+          onClose={() => setAuthHelpModal((prev) => ({ ...prev, isOpen: false }))}
+          errorCode={authHelpModal.code}
+          errorMessage={authHelpModal.message}
+          onRetrySignIn={handleSignIn}
+        />
+
+        <BarcodeScannerModal
+          isOpen={isScanModalOpen}
+          onClose={() => {
+            setIsScanModalOpen(false);
+            setInitialScanQuery(null);
+          }}
+          allAssets={assets}
+          onSelectAssetForTransaction={handleOpenTransactionForAsset}
+          onSelectAssetForLabel={handleOpenLabelForAsset}
+          onSelectAssetForEdit={handleOpenEditForAsset}
+          initialQuery={initialScanQuery}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100/70 text-slate-800 flex flex-col font-sans">
+      {/* Offline Indicator Banner */}
+      <OfflineIndicator />
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div
+          className={`fixed z-50 no-print ${
+            effectiveIsMobile && !isForcedMobilePreview
+              ? 'bottom-20 left-3.5 right-3.5'
+              : 'bottom-5 right-5 max-w-md'
+          }`}
+        >
+          <div
+            className={`flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-xs font-semibold border ${
+              toastMessage.type === 'success'
+                ? 'bg-slate-900 text-emerald-400 border-emerald-500/40'
+                : toastMessage.type === 'error'
+                ? 'bg-rose-950 text-rose-200 border-rose-500/40'
+                : 'bg-slate-900 text-blue-300 border-blue-500/40'
+            }`}
+          >
+            {toastMessage.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            )}
+            <span>{toastMessage.text}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Case 1: Desktop Web Version */}
+      {!effectiveIsMobile && (
+        <>
+          <Navbar
+            currentTab={currentTab}
+            setCurrentTab={setCurrentTab}
+            onOpenTransactionModal={() => handleOpenTransactionForAsset()}
+            onOpenAddAssetModal={handleOpenAddAsset}
+            onOpenScanModal={() => setIsScanModalOpen(true)}
+            onOpenBatchLabelModal={() => setIsBatchLabelModalOpen(true)}
+            onOpenBatchImportModal={handleOpenBatchImport}
+            user={user}
+            hasToken={!!token}
+            onSignIn={handleSignIn}
+            onSignOut={handleSignOut}
+            appUser={currentAppUser}
+            onAppLogout={handleAppLogout}
+            isSyncing={isSyncing}
+            onManualSync={handleManualSync}
+            spreadsheetUrl={workspaceConfig.spreadsheetUrl}
+            companySettings={companySettings}
+          />
+          {!isViewportMobile ? (
+            renderDesktopModeSwitcher()
+          ) : (
+            <div className="bg-blue-50 border-b border-blue-200 px-3 py-1.5 flex items-center justify-between text-xs no-print">
+              <span className="text-blue-900 font-medium">Mode Web Desktop aktif di layar kecil</span>
+              <button
+                type="button"
+                onClick={() => setViewMode('auto')}
+                className="px-2.5 py-1 rounded-lg bg-blue-600 text-white font-semibold cursor-pointer"
+              >
+                Kembali ke Mobile
+              </button>
+            </div>
+          )}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+            {renderMainWorkspace(false)}
+          </main>
+        </>
+      )}
+
+      {/* Case 2: Mobile Version Interactive Preview Frame (on Desktop) */}
+      {isForcedMobilePreview && (
+        <>
+          {renderDesktopModeSwitcher()}
+          <div className="flex-1 flex items-start justify-center px-4 py-5 bg-slate-200/70">
+            <div className="w-full max-w-[420px] h-[820px] max-h-[calc(100vh-110px)] rounded-[2.25rem] border-[6px] border-slate-900 bg-slate-50 shadow-2xl overflow-hidden flex flex-col relative">
+              <MobileTopBar
+                currentTab={currentTab}
+                companySettings={companySettings}
+                onOpenAddAssetModal={handleOpenAddAsset}
+                onOpenScanModal={() => setIsScanModalOpen(true)}
+                user={user}
+                hasToken={!!token}
+                onSignIn={handleSignIn}
+                appUser={currentAppUser}
+                onOpenMenu={() => setIsMobileMenuOpen(true)}
+              />
+              <main className="flex-1 overflow-y-auto px-3.5 py-4 space-y-4">
+                {renderMainWorkspace(true)}
+              </main>
+              <MobileBottomBar
+                currentTab={currentTab}
+                setCurrentTab={setCurrentTab}
+                onOpenScanModal={() => setIsScanModalOpen(true)}
+                onOpenMenu={() => setIsMobileMenuOpen(true)}
+                isPreviewFrame={true}
+              />
+              <MobileMenuSheet
+                isOpen={isMobileMenuOpen}
+                onClose={() => setIsMobileMenuOpen(false)}
+                currentTab={currentTab}
+                setCurrentTab={setCurrentTab}
+                onOpenAddAssetModal={handleOpenAddAsset}
+                onOpenTransactionModal={() => handleOpenTransactionForAsset()}
+                onOpenBatchLabelModal={() => setIsBatchLabelModalOpen(true)}
+                onOpenBatchImportModal={handleOpenBatchImport}
+                user={user}
+                hasToken={!!token}
+                onSignIn={handleSignIn}
+                onSignOut={handleSignOut}
+                appUser={currentAppUser}
+                onAppLogout={handleAppLogout}
+                isSyncing={isSyncing}
+                onManualSync={handleManualSync}
+                onSwitchToWeb={() => setViewMode('web')}
+                isPreviewFrame={true}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Case 3: Native Edge-to-Edge Mobile Version (Phone / Tablet < 1024px) */}
+      {!isForcedMobilePreview && effectiveIsMobile && (
+        <>
+          <MobileTopBar
+            currentTab={currentTab}
+            companySettings={companySettings}
+            onOpenAddAssetModal={handleOpenAddAsset}
+            onOpenScanModal={() => setIsScanModalOpen(true)}
+            user={user}
+            hasToken={!!token}
+            onSignIn={handleSignIn}
+            appUser={currentAppUser}
+            onOpenMenu={() => setIsMobileMenuOpen(true)}
+          />
+          <main className="flex-1 w-full px-3.5 py-4 pb-24 space-y-4">
+            {renderMainWorkspace(true)}
+          </main>
+          <MobileBottomBar
+            currentTab={currentTab}
+            setCurrentTab={setCurrentTab}
+            onOpenScanModal={() => setIsScanModalOpen(true)}
+            onOpenMenu={() => setIsMobileMenuOpen(true)}
+            isPreviewFrame={false}
+          />
+          <MobileMenuSheet
+            isOpen={isMobileMenuOpen}
+            onClose={() => setIsMobileMenuOpen(false)}
+            currentTab={currentTab}
+            setCurrentTab={setCurrentTab}
+            onOpenAddAssetModal={handleOpenAddAsset}
+            onOpenTransactionModal={() => handleOpenTransactionForAsset()}
+            onOpenBatchLabelModal={() => setIsBatchLabelModalOpen(true)}
+            onOpenBatchImportModal={handleOpenBatchImport}
+            user={user}
+            hasToken={!!token}
+            onSignIn={handleSignIn}
+            onSignOut={handleSignOut}
+            appUser={currentAppUser}
+            onAppLogout={handleAppLogout}
+            isSyncing={isSyncing}
+            onManualSync={handleManualSync}
+            onSwitchToWeb={() => setViewMode('web')}
+            isPreviewFrame={false}
+          />
+        </>
+      )}
+
+      {/* Transaction & Loan Modal */}
+      <TransactionModal
+        isOpen={isTransactionModalOpen}
+        onClose={() => setIsTransactionModalOpen(false)}
+        selectedAsset={selectedAssetForTrx}
+        allAssets={assets}
+        token={token}
+        currentUserEmail={user?.email || currentAppUser?.email || null}
+        workspaceConfig={workspaceConfig}
+        onTransactionSuccess={handleTransactionSuccess}
+        registeredLocations={locations}
+      />
+
+      {/* Add Asset Modal */}
+      <AddAssetModal
+        isOpen={isAddAssetModalOpen}
+        onClose={() => setIsAddAssetModalOpen(false)}
+        token={token}
+        spreadsheetId={workspaceConfig.spreadsheetId}
+        onAssetAdded={handleAssetAdded}
+        existingCount={assets.length}
+        registeredLocations={locations}
+        customDivisions={customDivisions}
+        customSubKelompoks={customSubKelompoks}
+      />
+
+      {/* Batch Import CSV Modal */}
+      <BatchImportModal
+        isOpen={isBatchImportModalOpen}
+        onClose={() => setIsBatchImportModalOpen(false)}
+        existingCount={assets.length}
+        onImportAssets={handleBatchImport}
+      />
+
+      {/* Batch Label Print Modal */}
+      <BatchLabelModal
+        isOpen={isBatchLabelModalOpen}
+        onClose={() => setIsBatchLabelModalOpen(false)}
+        allAssets={assets}
+        companySettings={companySettings}
+      />
+
+      {/* Edit Asset Modal */}
+      <EditAssetModal
+        isOpen={isEditAssetModalOpen}
+        onClose={() => setIsEditAssetModalOpen(false)}
+        asset={selectedAssetForEdit}
+        onSaveAsset={handleSaveEditedAsset}
+        onDeleteAsset={handleDeleteAsset}
+        registeredLocations={locations}
+      />
+
+      {/* Asset Label & QR Code Modal */}
+      <AssetLabelModal
+        isOpen={isLabelModalOpen}
+        onClose={() => setIsLabelModalOpen(false)}
+        asset={selectedAssetForLabel}
+        allAssets={assets}
+        companySettings={companySettings}
+      />
+
+      {/* Live Camera, Barcode & QR Scanner Modal */}
+      <BarcodeScannerModal
+        isOpen={isScanModalOpen}
+        onClose={() => {
+          setIsScanModalOpen(false);
+          setInitialScanQuery(null);
+        }}
+        allAssets={assets}
+        onSelectAssetForTransaction={handleOpenTransactionForAsset}
+        onSelectAssetForLabel={handleOpenLabelForAsset}
+        onSelectAssetForEdit={handleOpenEditForAsset}
+        initialQuery={initialScanQuery}
+      />
+
+      {/* GitHub Pages / Firebase OAuth Help Modal */}
+      <AuthDomainHelpModal
+        isOpen={authHelpModal.isOpen}
+        onClose={() => setAuthHelpModal((prev) => ({ ...prev, isOpen: false }))}
+        errorCode={authHelpModal.code}
+        errorMessage={authHelpModal.message}
+        onRetrySignIn={handleSignIn}
+      />
+
+      {/* Explicit Confirmation Modal for Spreadsheet Database Operations */}
+      <SpreadsheetConfirmModal
+        isOpen={Boolean(pendingSheetAction)}
+        action={pendingSheetAction}
+        spreadsheetName={workspaceConfig.spreadsheetName || 'AsetKantor_Database_Inventaris'}
+        counts={{
+          assets: assets.length,
+          transactions: transactions.length,
+          maintenance: maintenanceRecords.length,
+          opname: stockOpnameSessions.length,
+          disposal: disposalRecords.length,
+          locations: locations.length,
+          vendors: vendors.length,
+          users: appUsers.length,
+        }}
+        isProcessing={isSyncing}
+        onConfirm={executeConfirmedSpreadsheetAction}
+        onCancel={() => setPendingSheetAction(null)}
+      />
+
+      {/* BAST Digital Modal */}
+      <BastModal
+        isOpen={isBastModalOpen}
+        onClose={() => setIsBastModalOpen(false)}
+        transaction={selectedTrxForBast}
+        asset={assets.find((a) => a.id === selectedTrxForBast?.assetId) || null}
+        companySettings={companySettings}
+        onSaveSignature={(trxId, sigUrl) => {
+          setTransactions((prev) =>
+            prev.map((t) => (t.id === trxId ? { ...t, signatureDataUrl: sigUrl } : t))
+          );
+        }}
+      />
+
+      {/* Depreciation Calculator Modal */}
+      <DepreciationCalculatorModal
+        isOpen={isDepreciationModalOpen}
+        onClose={() => setIsDepreciationModalOpen(false)}
+        asset={selectedAssetForDepreciation}
+      />
+
+      {/* Full Photo Viewer Modal */}
+      <PhotoViewerModal
+        isOpen={photoViewer.isOpen}
+        onClose={() => setPhotoViewer((prev) => ({ ...prev, isOpen: false }))}
+        photoUrl={photoViewer.url}
+        title={photoViewer.title}
+      />
+
+      {/* Footer (Web Version) */}
+      {!effectiveIsMobile && (
+        <footer className="bg-white border-t border-slate-200 mt-12 py-5 text-center text-xs text-slate-500 no-print">
+          <p>
+            AsetKantor Enterprise &bull; Sistem Manajemen Inventaris Terintegrasi Google Sheets, Google Drive, &amp; Gmail API.
+          </p>
+        </footer>
+      )}
+    </div>
+  );
+}
