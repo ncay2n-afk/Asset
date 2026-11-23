@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { User } from 'firebase/auth';
 import {
   initAuth,
   googleSignIn,
@@ -21,18 +20,10 @@ import {
   MasterBuildingLocation,
   MasterVendor,
   MasterCompanySettings,
-  AppUserAccount
+  AppUserAccount,
+  GoogleUserProfile
 } from './types';
-import {
-  INITIAL_OFFICE_ASSETS,
-  INITIAL_TRANSACTIONS,
-  INITIAL_MAINTENANCE_RECORDS,
-  INITIAL_STOCK_OPNAME_SESSIONS,
-  INITIAL_DISPOSAL_RECORDS,
-  INITIAL_BUILDING_LOCATIONS,
-  INITIAL_VENDORS,
-  INITIAL_COMPANY_SETTINGS
-} from './data/mockInitialData';
+import { INITIAL_COMPANY_SETTINGS } from './data/mockInitialData';
 import {
   KODE_DIVISI_LIST,
   KODE_SUB_KELOMPOK_LIST,
@@ -117,8 +108,8 @@ export default function App() {
   const isForcedMobilePreview = !isViewportMobile && viewMode === 'mobile';
   const effectiveIsMobile = viewMode === 'mobile' || (viewMode === 'auto' && isViewportMobile);
 
-  // Authentication State (Google Workspace OAuth + Spreadsheet App User Session in memory)
-  const [user, setUser] = useState<User | null>(null);
+  // Authentication State (Direct Google OAuth 2.0 + Spreadsheet App User Session in memory)
+  const [user, setUser] = useState<GoogleUserProfile | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentAppUser, setCurrentAppUser] = useState<AppUserAccount | null>(null);
@@ -133,49 +124,49 @@ export default function App() {
     }
   });
 
-  // Asset, Transaction, Maintenance, Stock Opname, and Disposal Data
+  // Asset, Transaction, Maintenance, Stock Opname, and Disposal Data (Spreadsheet & Drive Primary DB)
   const [assets, setAssets] = useState<OfficeAsset[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_ASSETS_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_OFFICE_ASSETS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_OFFICE_ASSETS;
+      return [];
     }
   });
 
   const [transactions, setTransactions] = useState<AssetTransaction[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_TRX_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_TRANSACTIONS;
+      return [];
     }
   });
 
   const [maintenanceRecords, setMaintenanceRecords] = useState<MaintenanceRecord[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_MTC_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_MAINTENANCE_RECORDS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_MAINTENANCE_RECORDS;
+      return [];
     }
   });
 
   const [stockOpnameSessions, setStockOpnameSessions] = useState<StockOpnameSession[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_SO_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_STOCK_OPNAME_SESSIONS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_STOCK_OPNAME_SESSIONS;
+      return [];
     }
   });
 
   const [disposalRecords, setDisposalRecords] = useState<DisposalRecord[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_DSP_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_DISPOSAL_RECORDS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_DISPOSAL_RECORDS;
+      return [];
     }
   });
 
@@ -183,18 +174,18 @@ export default function App() {
   const [locations, setLocations] = useState<MasterBuildingLocation[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_LOC_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_BUILDING_LOCATIONS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_BUILDING_LOCATIONS;
+      return [];
     }
   });
 
   const [vendors, setVendors] = useState<MasterVendor[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_VND_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_VENDORS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_VENDORS;
+      return [];
     }
   });
 
@@ -452,6 +443,15 @@ export default function App() {
       customDivisions,
       customSubKelompoks,
       companySettings,
+      workspaceSettings: {
+        driveFolderId: workspaceConfig.driveFolderId,
+        driveFolderName: workspaceConfig.driveFolderName,
+        notificationEmail: workspaceConfig.notificationEmail,
+        autoSendEmailOnLoan: workspaceConfig.autoSendEmailOnLoan,
+        autoSendEmailOnDamage: workspaceConfig.autoSendEmailOnDamage,
+        autoSendEmailOnLowStock: workspaceConfig.autoSendEmailOnLowStock,
+        lowStockThreshold: workspaceConfig.lowStockThreshold,
+      },
       users: appUsers,
     }),
     [
@@ -465,6 +465,13 @@ export default function App() {
       customDivisions,
       customSubKelompoks,
       companySettings,
+      workspaceConfig.driveFolderId,
+      workspaceConfig.driveFolderName,
+      workspaceConfig.notificationEmail,
+      workspaceConfig.autoSendEmailOnLoan,
+      workspaceConfig.autoSendEmailOnDamage,
+      workspaceConfig.autoSendEmailOnLowStock,
+      workspaceConfig.lowStockThreshold,
       appUsers,
     ]
   );
@@ -512,10 +519,10 @@ export default function App() {
     [token, workspaceConfig.spreadsheetId]
   );
 
-  // Sign In Handler (+ Auto-Discover Existing Database Spreadsheet + Read Users)
+  // Sign In Handler (+ Direct Google OAuth, Auto-Discover Spreadsheet & Read Users)
   const handleSignIn = async () => {
     try {
-      const res = await googleSignIn();
+      const res = await googleSignIn(workspaceConfig.oauthClientId);
       setUser(res.user);
       setToken(res.accessToken);
       setAuthHelpModal({ isOpen: false, code: '', message: '' });
@@ -559,8 +566,9 @@ export default function App() {
       if (
         code === 'auth/unauthorized-domain' ||
         code === 'auth/popup-blocked' ||
-        code === 'auth/operation-not-allowed' ||
-        code === 'auth/missing-token'
+        code === 'auth/access-denied' ||
+        code === 'auth/missing-token' ||
+        code === 'auth/gsi-load-timeout'
       ) {
         setAuthHelpModal({
           isOpen: true,
@@ -765,13 +773,15 @@ export default function App() {
         }
         setWorkspaceConfig((prev) => ({
           ...prev,
+          ...(loaded.workspaceSettings || {}),
+          autoSyncSpreadsheet: true,
           lastSyncedAt: new Date().toISOString(),
         }));
         const assetCount = loaded.assets?.length ?? 0;
         const trxCount = loaded.transactions?.length ?? 0;
         setToastMessage({
           type: 'success',
-          text: `Berhasil memuat database dari Google Spreadsheet (${assetCount} aset, ${trxCount} riwayat mutasi)!`,
+          text: `Berhasil memuat database dari Google Spreadsheet (${assetCount} aset, ${trxCount} riwayat mutasi) & mengaktifkan Auto-Sync!`,
         });
       }
     } catch (err: any) {
@@ -994,7 +1004,8 @@ export default function App() {
   const handleCompleteMaintenance = (
     recordId: string,
     actualCost: number,
-    restoreAssetCondition: boolean
+    restoreAssetCondition: boolean,
+    driveInvoiceUrl?: string
   ) => {
     const record = maintenanceRecords.find((r) => r.id === recordId);
     if (!record) return;
@@ -1007,6 +1018,7 @@ export default function App() {
               status: 'Selesai',
               actualCost,
               completedDate: new Date().toISOString().split('T')[0],
+              driveInvoiceUrl: driveInvoiceUrl || r.driveInvoiceUrl,
             }
           : r
       )
@@ -1279,6 +1291,7 @@ export default function App() {
             isSyncingUsers={isSyncingUsers}
             onRefreshUsersFromSheet={() => handleRefreshUsersFromSheet().then(() => undefined)}
             onPushUsersToSheet={() => setPendingSheetAction('push_full_db')}
+            token={token}
           />
         ) : (
           <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
@@ -1312,8 +1325,8 @@ export default function App() {
           onOpenAuthHelp={() =>
             setAuthHelpModal({
               isOpen: true,
-              code: 'github-pages-oauth-checklist',
-              message: `Jika login gagal di ${typeof window !== 'undefined' ? window.location.hostname : 'GitHub Pages'}, pastikan domain & origin sudah didaftarkan di Firebase dan Google Cloud Console.`,
+              code: 'google-oauth-origins-checklist',
+              message: `Jika koneksi Google gagal di ${typeof window !== 'undefined' ? window.location.origin : 'domain ini'}, pastikan Origin sudah didaftarkan di Google Cloud Console OAuth 2.0 Client.`,
             })
           }
           isSyncing={isSyncing}
@@ -1430,8 +1443,8 @@ export default function App() {
           onOpenAuthHelp={() =>
             setAuthHelpModal({
               isOpen: true,
-              code: 'github-pages-oauth-checklist',
-              message: `Jika login gagal di ${typeof window !== 'undefined' ? window.location.hostname : 'GitHub Pages'}, pastikan domain & origin sudah didaftarkan di Firebase dan Google Cloud Console.`,
+              code: 'google-oauth-origins-checklist',
+              message: `Jika koneksi Google gagal di ${typeof window !== 'undefined' ? window.location.origin : 'domain ini'}, pastikan Origin sudah didaftarkan di Google Cloud Console OAuth 2.0 Client.`,
             })
           }
           hasQrParam={Boolean(initialScanQuery)}
@@ -1683,6 +1696,7 @@ export default function App() {
         isOpen={isEditAssetModalOpen}
         onClose={() => setIsEditAssetModalOpen(false)}
         asset={selectedAssetForEdit}
+        token={token}
         onSaveAsset={handleSaveEditedAsset}
         onDeleteAsset={handleDeleteAsset}
         registeredLocations={locations}
@@ -1746,6 +1760,7 @@ export default function App() {
         onClose={() => setIsBastModalOpen(false)}
         transaction={selectedTrxForBast}
         asset={assets.find((a) => a.id === selectedTrxForBast?.assetId) || null}
+        token={token}
         companySettings={companySettings}
         onSaveSignature={(trxId, sigUrl) => {
           setTransactions((prev) =>

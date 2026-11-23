@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { AssetTransaction, OfficeAsset } from '../types';
 import { OverdueLoansTracker } from './OverdueLoansTracker';
+import { getDriveOpenLink, normalizeDriveImageUrl } from '../services/driveService';
 
 interface TransactionHistoryProps {
   transactions: AssetTransaction[];
@@ -246,14 +247,14 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                             title="Pratinjau Foto"
                           >
                             <img
-                              src={t.photoDriveUrl}
+                              src={normalizeDriveImageUrl(t.photoDriveUrl)}
                               alt="Bukti Fisik"
                               className="w-full h-full object-cover"
                             />
                           </button>
                           <div>
                             <a
-                              href={t.photoDriveUrl}
+                              href={getDriveOpenLink(t.photoDriveUrl)}
                               target="_blank"
                               rel="noreferrer"
                               className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline"

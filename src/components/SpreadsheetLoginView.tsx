@@ -17,15 +17,14 @@ import {
   QrCode,
   Link2
 } from 'lucide-react';
-import { User } from 'firebase/auth';
-import { AppUserAccount, MasterCompanySettings, WorkspaceConfig } from '../types';
+import { AppUserAccount, MasterCompanySettings, WorkspaceConfig, GoogleUserProfile } from '../types';
 import { generateSaltHex, hashPassword, verifyPassword } from '../services/passwordCrypto';
 
 interface SpreadsheetLoginViewProps {
   users: AppUserAccount[];
   companySettings: MasterCompanySettings;
   workspaceConfig: WorkspaceConfig;
-  googleUser: User | null;
+  googleUser: GoogleUserProfile | null;
   token: string | null;
   isSyncingUsers: boolean;
   onGoogleConnectAndSync: () => Promise<void>;

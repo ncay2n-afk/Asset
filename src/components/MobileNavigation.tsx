@@ -21,9 +21,8 @@ import {
   ChevronRight,
   CheckCircle2
 } from 'lucide-react';
-import { User } from 'firebase/auth';
 import { AppTab } from './Navbar';
-import { MasterCompanySettings, AppUserAccount } from '../types';
+import { MasterCompanySettings, AppUserAccount, GoogleUserProfile } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 const ROLE_SHORT: Record<AppUserAccount['role'], string> = {
@@ -49,7 +48,7 @@ interface MobileTopBarProps {
   companySettings?: MasterCompanySettings;
   onOpenAddAssetModal: () => void;
   onOpenScanModal: () => void;
-  user: User | null;
+  user: GoogleUserProfile | null;
   hasToken: boolean;
   onSignIn: () => void;
   appUser?: AppUserAccount | null;
@@ -243,7 +242,7 @@ interface MobileMenuSheetProps {
   onOpenTransactionModal: () => void;
   onOpenBatchLabelModal: () => void;
   onOpenBatchImportModal: () => void;
-  user: User | null;
+  user: GoogleUserProfile | null;
   hasToken: boolean;
   onSignIn: () => void;
   onSignOut: () => void;

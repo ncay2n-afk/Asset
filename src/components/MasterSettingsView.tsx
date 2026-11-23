@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Building2,
@@ -25,7 +25,8 @@ import {
   Image,
   X,
   FileSpreadsheet,
-  Users
+  Users,
+  Loader2
 } from 'lucide-react';
 import {
   MasterBuildingLocation,
@@ -40,6 +41,7 @@ import {
 } from '../types';
 import { CodeItem } from '../data/assetCodeGenerator';
 import { UserManagementPanel } from './UserManagementPanel';
+import { uploadAssetFileToDrive, compressImageFileToDataUrl } from '../services/driveService';
 
 interface MasterSettingsViewProps {
   locations: MasterBuildingLocation[];
@@ -91,6 +93,7 @@ interface MasterSettingsViewProps {
   isSyncingUsers?: boolean;
   onRefreshUsersFromSheet?: () => Promise<void>;
   onPushUsersToSheet?: () => void;
+  token?: string | null;
 }
 
 export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
@@ -128,6 +131,7 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
   isSyncingUsers = false,
   onRefreshUsersFromSheet,
   onPushUsersToSheet,
+  token = null,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<
     'company' | 'users' | 'locations' | 'divisions' | 'categories' | 'vendors' | 'backup'
@@ -135,6 +139,11 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
 
   // Company Settings Form State
   const [companyForm, setCompanyForm] = useState<MasterCompanySettings>(companySettings);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+
+  useEffect(() => {
+    setCompanyForm(companySettings);
+  }, [companySettings]);
 
   // New Location Form State
   const [newBldName, setNewBldName] = useState('');
@@ -173,21 +182,39 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
   const [importPreview, setImportPreview] = useState<any[]>([]);
 
   // ==========================================
-  // LOGO UPLOAD HANDLERS
+  // LOGO UPLOAD HANDLERS (GOOGLE DRIVE FIRST)
   // ==========================================
-  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      if (file.size > 2 * 1024 * 1024) {
-        alert('Ukuran file logo maksimal 2MB.');
+      if (file.size > 4 * 1024 * 1024) {
+        alert('Ukuran file logo maksimal 4MB.');
         return;
       }
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const result = event.target?.result as string;
-        setCompanyForm((prev) => ({ ...prev, logoUrl: result }));
-      };
-      reader.readAsDataURL(file);
+      setIsUploadingLogo(true);
+      try {
+        if (token) {
+          const driveRes = await uploadAssetFileToDrive(
+            token,
+            file,
+            `LOGO_INSTANSI_${Date.now().toString().slice(-5)}.png`,
+            ['_COMPANY_BRANDING'],
+            `Logo resmi ${companyForm.companyName}`
+          );
+          setCompanyForm((prev) => ({ ...prev, logoUrl: driveRes.imageUrl }));
+        } else {
+          const compressed = await compressImageFileToDataUrl(file, 320, 0.78);
+          setCompanyForm((prev) => ({ ...prev, logoUrl: compressed }));
+        }
+      } catch (err: any) {
+        console.warn('Gagal upload logo ke Drive, menggunakan kompresi lokal:', err);
+        try {
+          const compressed = await compressImageFileToDataUrl(file, 320, 0.78);
+          setCompanyForm((prev) => ({ ...prev, logoUrl: compressed }));
+        } catch {}
+      } finally {
+        setIsUploadingLogo(false);
+      }
     }
   };
 
@@ -658,11 +685,12 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
 
               <div className="flex flex-wrap items-center gap-2 pt-1 justify-center sm:justify-start">
                 <label className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shadow-xs transition">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Pilih File Logo</span>
+                  {isUploadingLogo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                  <span>{isUploadingLogo ? 'Mengunggah ke Drive...' : token ? 'Unggah Logo ke Drive' : 'Pilih File Logo'}</span>
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={isUploadingLogo}
                     onChange={handleLogoFileChange}
                     className="hidden"
                   />

@@ -30,6 +30,7 @@ import {
 import { OfficeAsset, AssetCategory, AssetStatus, AssetCondition } from '../types';
 import { parseAssetCode } from '../data/assetCodeGenerator';
 import { formatRupiah } from '../utils/currencyFormatter';
+import { getDriveOpenLink, normalizeDriveImageUrl } from '../services/driveService';
 
 interface AssetListProps {
   assets: OfficeAsset[];
@@ -376,7 +377,7 @@ export const AssetList: React.FC<AssetListProps> = ({
                             className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden shrink-0 cursor-pointer group-hover:ring-2 group-hover:ring-blue-500/30 transition relative"
                           >
                             <img
-                              src={asset.lastPhotoUrl}
+                              src={normalizeDriveImageUrl(asset.lastPhotoUrl)}
                               alt={asset.name}
                               className="w-full h-full object-cover"
                             />
@@ -483,7 +484,7 @@ export const AssetList: React.FC<AssetListProps> = ({
                       {asset.lastPhotoUrl ? (
                         <div className="flex flex-col gap-1">
                           <a
-                            href={asset.lastPhotoUrl}
+                            href={getDriveOpenLink(asset.lastPhotoUrl)}
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
@@ -573,7 +574,7 @@ export const AssetList: React.FC<AssetListProps> = ({
                 >
                   {asset.lastPhotoUrl ? (
                     <img
-                      src={asset.lastPhotoUrl}
+                      src={normalizeDriveImageUrl(asset.lastPhotoUrl)}
                       alt={asset.name}
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
@@ -751,7 +752,7 @@ export const AssetList: React.FC<AssetListProps> = ({
                     {selectedAssetDetail.lastPhotoUrl ? (
                       <>
                         <img
-                          src={selectedAssetDetail.lastPhotoUrl}
+                          src={normalizeDriveImageUrl(selectedAssetDetail.lastPhotoUrl)}
                           alt={selectedAssetDetail.name}
                           className="w-full h-full object-cover"
                         />
@@ -773,7 +774,7 @@ export const AssetList: React.FC<AssetListProps> = ({
                   </div>
                   {selectedAssetDetail.lastPhotoUrl && (
                     <a
-                      href={selectedAssetDetail.lastPhotoUrl}
+                      href={getDriveOpenLink(selectedAssetDetail.lastPhotoUrl)}
                       target="_blank"
                       rel="noreferrer"
                       className="mt-2 text-[11px] text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1"

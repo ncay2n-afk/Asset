@@ -25,7 +25,7 @@ import {
   WorkspaceConfig,
   MasterBuildingLocation
 } from '../types';
-import { uploadConditionPhotoToDrive } from '../services/driveService';
+import { uploadConditionPhotoToDrive, compressImageFileToDataUrl } from '../services/driveService';
 import { sendGmailMessage, buildAssetStatusEmailTemplate } from '../services/gmailService';
 
 interface TransactionModalProps {
@@ -188,16 +188,15 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
               currentAsset.id,
               dateOnly
             );
-            uploadedPhotoUrl = driveResult.webViewLink;
+            uploadedPhotoUrl = driveResult.imageUrl;
             uploadedFileId = driveResult.fileId;
             driveFolderPath = driveResult.folderPath;
           } catch (driveErr: any) {
-            console.warn('Gagal upload ke Drive API, gunakan local preview url:', driveErr);
-            uploadedPhotoUrl = photoPreview || '';
+            console.warn('Gagal upload ke Drive API, gunakan fallback terkompresi:', driveErr);
+            uploadedPhotoUrl = await compressImageFileToDataUrl(photoFile, 480, 0.7).catch(() => '');
           }
         } else {
-          // Offline / Local preview fallback
-          uploadedPhotoUrl = photoPreview || '';
+          uploadedPhotoUrl = await compressImageFileToDataUrl(photoFile, 480, 0.7).catch(() => '');
         }
       }
 

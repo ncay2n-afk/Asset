@@ -14,9 +14,11 @@ import {
   MasterVendor,
   MasterCompanySettings,
   AppUserAccount,
-  AppUserRole
+  AppUserRole,
+  WorkspaceConfig
 } from '../types';
 import { CodeItem } from '../data/assetCodeGenerator';
+import { normalizeDriveImageUrl } from './driveService';
 
 export const TAB_ASSETS = 'Daftar_Aset';
 export const TAB_TRANSACTIONS = 'Riwayat_Mutasi';
@@ -41,6 +43,7 @@ export interface FullSpreadsheetDatabase {
   customDivisions: CodeItem[];
   customSubKelompoks: CodeItem[];
   companySettings: MasterCompanySettings;
+  workspaceSettings?: Partial<WorkspaceConfig>;
   users?: AppUserAccount[];
 }
 
@@ -93,6 +96,7 @@ export const TRANSACTION_HEADERS = [
   'Lokasi Sebelum',
   'Lokasi Sesudah',
   'Tgl Dikembalikan Aktual',
+  'Tautan Tanda Tangan BAST',
 ];
 
 export const MAINTENANCE_HEADERS = [
@@ -415,6 +419,11 @@ export function transactionToRow(trx: AssetTransaction): string[] {
     safeCell(trx.locationBefore || ''),
     safeCell(trx.locationAfter || ''),
     safeCell(trx.actualReturnDate || ''),
+    safeCell(
+      trx.signatureDataUrl && !trx.signatureDataUrl.startsWith('blob:') && trx.signatureDataUrl.length <= 45000
+        ? trx.signatureDataUrl
+        : ''
+    ),
   ];
 }
 
@@ -509,7 +518,10 @@ function codeItemToRow(item: CodeItem): string[] {
   return [safeCell(item.code), safeCell(item.name)];
 }
 
-function settingsToRows(cfg: MasterCompanySettings): string[][] {
+function settingsToRows(
+  cfg: MasterCompanySettings,
+  ws?: Partial<WorkspaceConfig>
+): string[][] {
   return [
     ['companyName', safeCell(cfg.companyName)],
     ['brandSubtitle', safeCell(cfg.brandSubtitle)],
@@ -523,6 +535,13 @@ function settingsToRows(cfg: MasterCompanySettings): string[][] {
     ['bapaNumberPrefix', safeCell(cfg.bapaNumberPrefix)],
     ['soNumberPrefix', safeCell(cfg.soNumberPrefix)],
     ['assetCodeSeparator', safeCell(cfg.assetCodeSeparator)],
+    ['driveFolderId', safeCell(ws?.driveFolderId || '')],
+    ['driveFolderName', safeCell(ws?.driveFolderName || 'AsetKantor_Dokumentasi_Foto')],
+    ['notificationEmail', safeCell(ws?.notificationEmail || '')],
+    ['autoSendEmailOnLoan', String(ws?.autoSendEmailOnLoan ?? true)],
+    ['autoSendEmailOnDamage', String(ws?.autoSendEmailOnDamage ?? true)],
+    ['autoSendEmailOnLowStock', String(ws?.autoSendEmailOnLowStock ?? true)],
+    ['lowStockThreshold', safeCell(ws?.lowStockThreshold ?? 1)],
   ];
 }
 
@@ -735,7 +754,7 @@ export async function saveFullDatabaseToSpreadsheet(
     {
       range: `${TAB_SETTINGS}!A1`,
       majorDimension: 'ROWS',
-      values: [SETTINGS_HEADERS, ...settingsToRows(db.companySettings)],
+      values: [SETTINGS_HEADERS, ...settingsToRows(db.companySettings, db.workspaceSettings)],
     },
     {
       range: `${TAB_USERS}!A1`,
@@ -784,7 +803,7 @@ function parseAssetsRows(rows: string[][]): OfficeAsset[] {
       purchaseDate: r[12] || '',
       purchasePrice: Number(r[13]) || 0,
       custodian: r[14] || '',
-      lastPhotoUrl: r[15] || '',
+      lastPhotoUrl: normalizeDriveImageUrl(r[15] || ''),
       lastPhotoDate: r[16] || '',
       notes: r[17] || '',
       updatedAt: r[18] || new Date().toISOString(),
@@ -848,7 +867,7 @@ export async function loadFullDatabaseFromSpreadsheet(
 
   const result: Partial<FullSpreadsheetDatabase> = {};
 
-  if (rowsByTab[TAB_ASSETS] && rowsByTab[TAB_ASSETS].length > 0) {
+  if (rowsByTab[TAB_ASSETS]) {
     result.assets = parseAssetsRows(rowsByTab[TAB_ASSETS]);
   }
 
@@ -868,7 +887,7 @@ export async function loadFullDatabaseFromSpreadsheet(
         expectedReturnDate: r[9] && r[9] !== '-' ? r[9] : undefined,
         conditionBefore: (r[10] as AssetCondition) || 'Baik',
         conditionAfter: (r[11] as AssetCondition) || 'Baik',
-        photoDriveUrl: r[12] || undefined,
+        photoDriveUrl: normalizeDriveImageUrl(r[12]) || undefined,
         photoDriveFileId: r[13] || undefined,
         photoDriveFolderName: r[14] || undefined,
         notes: r[15] || '',
@@ -877,6 +896,7 @@ export async function loadFullDatabaseFromSpreadsheet(
         locationBefore: r[18] || undefined,
         locationAfter: r[19] || undefined,
         actualReturnDate: r[20] || undefined,
+        signatureDataUrl: normalizeDriveImageUrl(r[21]) || undefined,
       }));
   }
 
@@ -895,7 +915,7 @@ export async function loadFullDatabaseFromSpreadsheet(
         actualCost: r[8] ? Number(r[8]) : undefined,
         status: (r[9] as MaintenanceStatus) || 'Terjadwal',
         notes: r[10] || '',
-        driveInvoiceUrl: r[11] || undefined,
+        driveInvoiceUrl: normalizeDriveImageUrl(r[11]) || undefined,
         createdAt: r[12] || new Date().toISOString(),
       }));
   }
@@ -950,7 +970,7 @@ export async function loadFullDatabaseFromSpreadsheet(
       }));
   }
 
-  if (rowsByTab[TAB_LOCATIONS] && rowsByTab[TAB_LOCATIONS].length > 0) {
+  if (rowsByTab[TAB_LOCATIONS]) {
     result.locations = rowsByTab[TAB_LOCATIONS]
       .filter((r) => r[0])
       .map((r) => ({
@@ -962,7 +982,7 @@ export async function loadFullDatabaseFromSpreadsheet(
       }));
   }
 
-  if (rowsByTab[TAB_VENDORS] && rowsByTab[TAB_VENDORS].length > 0) {
+  if (rowsByTab[TAB_VENDORS]) {
     result.vendors = rowsByTab[TAB_VENDORS]
       .filter((r) => r[0])
       .map((r) => ({
@@ -997,7 +1017,7 @@ export async function loadFullDatabaseFromSpreadsheet(
       result.companySettings = {
         companyName: map.companyName,
         brandSubtitle: map.brandSubtitle || '',
-        logoUrl: map.logoUrl || undefined,
+        logoUrl: normalizeDriveImageUrl(map.logoUrl) || undefined,
         address: map.address || '',
         phone: map.phone || '',
         email: map.email || '',
@@ -1009,6 +1029,15 @@ export async function loadFullDatabaseFromSpreadsheet(
         assetCodeSeparator: map.assetCodeSeparator === '-' ? '-' : '.',
       };
     }
+    result.workspaceSettings = {
+      driveFolderId: map.driveFolderId || null,
+      driveFolderName: map.driveFolderName || 'AsetKantor_Dokumentasi_Foto',
+      notificationEmail: map.notificationEmail || '',
+      autoSendEmailOnLoan: map.autoSendEmailOnLoan !== 'false',
+      autoSendEmailOnDamage: map.autoSendEmailOnDamage !== 'false',
+      autoSendEmailOnLowStock: map.autoSendEmailOnLowStock !== 'false',
+      lowStockThreshold: map.lowStockThreshold ? Number(map.lowStockThreshold) : 1,
+    };
   }
 
   if (rowsByTab[TAB_USERS]) {

@@ -19,10 +19,10 @@ import {
   Database,
   Clock
 } from 'lucide-react';
-import { User } from 'firebase/auth';
-import { WorkspaceConfig, OfficeAsset } from '../types';
+import { WorkspaceConfig, OfficeAsset, GoogleUserProfile } from '../types';
 import { sendGmailMessage } from '../services/gmailService';
 import { SpreadsheetConfirmAction } from './SpreadsheetConfirmModal';
+import { getEffectiveGoogleClientId, setCustomGoogleClientId } from '../services/auth';
 import {
   TAB_ASSETS,
   TAB_TRANSACTIONS,
@@ -38,7 +38,7 @@ import {
 } from '../services/sheetsService';
 
 interface GoogleWorkspaceSettingsProps {
-  user: User | null;
+  user: GoogleUserProfile | null;
   token: string | null;
   onSignIn: () => void;
   workspaceConfig: WorkspaceConfig;
@@ -84,6 +84,7 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
 }) => {
   const [isSearchingDrive, setIsSearchingDrive] = useState(false);
   const [customSheetId, setCustomSheetId] = useState(workspaceConfig.spreadsheetId || '');
+  const [oauthClientInput, setOauthClientInput] = useState(() => getEffectiveGoogleClientId());
   const [testEmailStatus, setTestEmailStatus] = useState<string | null>(null);
   const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(
@@ -93,6 +94,15 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
   useEffect(() => {
     setCustomSheetId(workspaceConfig.spreadsheetId || '');
   }, [workspaceConfig.spreadsheetId]);
+
+  const handleSaveOAuthClientId = () => {
+    setCustomGoogleClientId(oauthClientInput);
+    onUpdateConfig({ oauthClientId: oauthClientInput.trim() || undefined });
+    setFeedbackMsg({
+      type: 'success',
+      text: 'Google OAuth Client ID berhasil disimpan (mode Google OAuth langsung tanpa Firebase).',
+    });
+  };
 
   const handleCreateNewSpreadsheetClick = () => {
     if (!token) {
@@ -207,7 +217,7 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
                 Integrasi Ekosistem Google Workspace
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Google Spreadsheet (Database Utama 10 Tab), Google Drive (Foto Bukti), &amp; Gmail (Notifikasi)
+                Google Spreadsheet (Database Utama 11 Tab), Google Drive (Semua Foto, Logo &amp; TTD BAST), &amp; Gmail (Notifikasi)
               </p>
             </div>
           </div>
@@ -259,6 +269,29 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
             <span>{feedbackMsg.text}</span>
           </div>
         )}
+
+        {/* Direct Google OAuth Client ID (Non-Firebase) */}
+        <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-end gap-2">
+          <div className="flex-1">
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+              Google OAuth Client ID (Koneksi Langsung Google Cloud — Non-Firebase)
+            </label>
+            <input
+              type="text"
+              value={oauthClientInput}
+              onChange={(e) => setOauthClientInput(e.target.value)}
+              placeholder="xxxx.apps.googleusercontent.com"
+              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-mono text-slate-700"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={handleSaveOAuthClientId}
+            className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 transition cursor-pointer shrink-0"
+          >
+            Simpan Client ID
+          </button>
+        </div>
       </div>
 
       {/* 1. Google Sheets Full Database Card */}
@@ -445,7 +478,7 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
                   Mode Database Real-Time (Auto-Sync Setiap Perubahan)
                 </div>
                 <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
-                  Jika diaktifkan, setiap penambahan/edit/hapus aset, mutasi barang, servis, opname, penghapusan BAPA, maupun perubahan master data akan otomatis disimpan ke 10 tab Google Spreadsheet. Penyimpanan browser lokal tetap berjalan sebagai cache cadangan offline.
+                  Jika diaktifkan, setiap penambahan/edit/hapus aset, mutasi barang, servis, opname, penghapusan BAPA, pengaturan aplikasi, maupun akun pengguna otomatis disimpan ke 11 tab Google Spreadsheet &amp; gambar ke Google Drive.
                 </p>
               </div>
             </label>
@@ -461,10 +494,10 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
           </div>
           <div>
             <h4 className="text-sm font-bold text-slate-900">
-              2. Google Drive (Penyimpanan Foto Bukti Kondisi)
+              2. Google Drive (Penyimpanan Semua Gambar &amp; Dokumen Visual)
             </h4>
             <p className="text-xs text-slate-500">
-              Struktur folder otomatis dibuat per ID Aset dan tanggal mutasi.
+              Foto aset (tambah &amp; edit), foto kondisi mutasi, tanda tangan BAST, nota servis, dan logo perusahaan otomatis diunggah ke Google Drive.
             </p>
           </div>
         </div>
@@ -476,12 +509,14 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
           </div>
           <div className="bg-white p-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-800 space-y-1">
             <p className="text-indigo-600 font-bold">📁 AsetKantor_Dokumentasi_Foto</p>
-            <p className="pl-4 text-slate-700">├── 📁 AST-IT-001 (Kode Aset)</p>
-            <p className="pl-8 text-slate-600">├── 📁 2026-09-25 (Tanggal Transaksi)</p>
-            <p className="pl-12 text-slate-500">└── 🖼️ KONDISI_AST-IT-001_2026-09-25_TRX-123456.jpg</p>
+            <p className="pl-4 text-slate-700">├── 📁 _COMPANY_BRANDING / LOGO_INSTANSI.png</p>
+            <p className="pl-4 text-slate-700">├── 📁 01_14_001_001_26 (Kode Aset)</p>
+            <p className="pl-8 text-slate-600">├── 📁 2026-11-22 / INITIAL / KONDISI.jpg</p>
+            <p className="pl-8 text-slate-600">├── 📁 BAST_Signatures / TTD_BAST_TRX.png</p>
+            <p className="pl-8 text-slate-500">└── 📁 Maintenance_Invoices / NOTA_MTC.jpg</p>
           </div>
           <p className="text-[11px] text-slate-500">
-            Setiap file foto memiliki izin akses langsung yang dapat dibuka melalui tautan catatan aset di aplikasi.
+            Seluruh tautan gambar Google Drive otomatis disimpan ke dalam sel Google Spreadsheet yang sesuai.
           </p>
         </div>
       </div>

@@ -18,8 +18,7 @@ import {
   ChevronDown,
   SlidersHorizontal
 } from 'lucide-react';
-import { User } from 'firebase/auth';
-import { MasterCompanySettings, AppUserAccount } from '../types';
+import { MasterCompanySettings, AppUserAccount, GoogleUserProfile } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 export type AppTab =
@@ -40,7 +39,7 @@ interface NavbarProps {
   onOpenScanModal: () => void;
   onOpenBatchLabelModal: () => void;
   onOpenBatchImportModal: () => void;
-  user: User | null;
+  user: GoogleUserProfile | null;
   hasToken: boolean;
   onSignIn: () => void;
   onSignOut: () => void;

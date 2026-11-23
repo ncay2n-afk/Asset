@@ -37,21 +37,16 @@ Setelah 1-2 menit, URL website Anda akan aktif di:
 
 ---
 
-## Langkah 3: Konfigurasi Otorisasi Domain di Firebase & Google Console
+## Langkah 3: Konfigurasi Otorisasi Domain di Google Cloud Console (Tanpa Firebase)
 
-Agar fitur **Login Google**, **Upload Foto ke Google Drive**, dan **Notifikasi Gmail** bekerja di domain GitHub Pages Anda:
+Agar fitur **Koneksi Google Spreadsheet (Database Utama)**, **Google Drive (Semua Foto, Logo & TTD BAST)**, dan **Notifikasi Gmail** bekerja di domain GitHub Pages Anda:
 
-1. Buka [Firebase Console](https://console.firebase.google.com/) > Pilih project: `gen-lang-client-0092700881`.
-2. Masuk ke **Authentication** > Tab **Settings** > **Authorized domains**.
-3. Klik **Add domain**, lalu masukkan domain GitHub Pages Anda:
-   * Contoh: `USERNAME.github.io`
-4. Klik **Save**.
-
-5. Buka [Google Cloud Console Credentials](https://console.cloud.google.com/apis/credentials):
-   * Cari OAuth 2.0 Client ID.
+1. Buka [Google Cloud Console Credentials](https://console.cloud.google.com/apis/credentials):
+   * Aktifkan **Google Sheets API**, **Google Drive API**, dan **Gmail API**.
+   * Pilih (atau buat) **OAuth 2.0 Client ID** bertipe *Web application*.
    * Di bagian **Authorized JavaScript origins**, tambahkan:
      * `https://USERNAME.github.io`
-   * Di bagian **Authorized redirect URIs**, tambahkan:
-     * `https://USERNAME.github.io/NAMA-REPO`
-     * `https://gen-lang-client-0092700881.firebaseapp.com/__/auth/handler`
    * Klik **Save**.
+2. Jika Anda membuat OAuth Client ID sendiri di akun Google Cloud Anda, masukkan Client ID tersebut di menu **Google Workspace -> Google OAuth Client ID** di dalam aplikasi (atau atur variabel `VITE_GOOGLE_OAUTH_CLIENT_ID`).
+3. Pada menu **OAuth consent screen**, pastikan status aplikasi sudah **Published** atau tambahkan email akun yang digunakan ke daftar **Test users**.
+

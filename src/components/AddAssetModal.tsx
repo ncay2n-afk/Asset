@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Camera, Layers, CheckCircle2, AlertTriangle, Loader2, Sparkles, Hash } from 'lucide-react';
 import { OfficeAsset, AssetCategory, AssetCondition, MasterBuildingLocation } from '../types';
-import { uploadConditionPhotoToDrive } from '../services/driveService';
+import { uploadConditionPhotoToDrive, compressImageFileToDataUrl } from '../services/driveService';
 import { CurrencyInput } from './CurrencyInput';
 import {
   KODE_BIDANG_LIST,
@@ -132,7 +132,7 @@ export const AddAssetModal: React.FC<AddAssetModalProps> = ({
       const autoId = generatedAssetCode;
       const todayStr = new Date().toISOString().split('T')[0];
 
-      let uploadedPhotoUrl = photoPreview || '';
+      let uploadedPhotoUrl = '';
 
       if (photoFile && token) {
         try {
@@ -143,10 +143,13 @@ export const AddAssetModal: React.FC<AddAssetModalProps> = ({
             autoId,
             todayStr
           );
-          uploadedPhotoUrl = driveResult.webViewLink;
+          uploadedPhotoUrl = driveResult.imageUrl;
         } catch (driveErr) {
           console.warn('Drive upload error for initial asset photo:', driveErr);
+          uploadedPhotoUrl = await compressImageFileToDataUrl(photoFile, 480, 0.7).catch(() => '');
         }
+      } else if (photoFile) {
+        uploadedPhotoUrl = await compressImageFileToDataUrl(photoFile, 480, 0.7).catch(() => '');
       }
 
       const newAsset: OfficeAsset = {

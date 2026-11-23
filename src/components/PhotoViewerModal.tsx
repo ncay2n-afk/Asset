@@ -1,5 +1,6 @@
 import React from 'react';
-import { X, ExternalLink, HardDrive, Download } from 'lucide-react';
+import { X, ExternalLink, HardDrive } from 'lucide-react';
+import { normalizeDriveImageUrl, getDriveOpenLink } from '../services/driveService';
 
 interface PhotoViewerModalProps {
   isOpen: boolean;
@@ -16,6 +17,9 @@ export const PhotoViewerModal: React.FC<PhotoViewerModalProps> = ({
 }) => {
   if (!isOpen || !photoUrl) return null;
 
+  const displayUrl = normalizeDriveImageUrl(photoUrl);
+  const openUrl = getDriveOpenLink(photoUrl);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
       <div className="bg-slate-900 text-white rounded-2xl max-w-3xl w-full overflow-hidden shadow-2xl border border-slate-800 flex flex-col max-h-[90vh]">
@@ -27,7 +31,7 @@ export const PhotoViewerModal: React.FC<PhotoViewerModalProps> = ({
           </div>
           <div className="flex items-center gap-2">
             <a
-              href={photoUrl}
+              href={openUrl}
               target="_blank"
               rel="noreferrer"
               className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
@@ -47,7 +51,7 @@ export const PhotoViewerModal: React.FC<PhotoViewerModalProps> = ({
         {/* Image Content */}
         <div className="flex-1 bg-black flex items-center justify-center p-4 overflow-hidden">
           <img
-            src={photoUrl}
+            src={displayUrl}
             alt={title}
             className="max-h-[68vh] max-w-full object-contain rounded-lg"
           />
@@ -55,9 +59,9 @@ export const PhotoViewerModal: React.FC<PhotoViewerModalProps> = ({
 
         {/* Footer info */}
         <div className="p-3 px-6 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-          <span>Foto bukti tersimpan di Google Drive terenkripsi akun Anda.</span>
+          <span>Foto bukti tersimpan di Google Drive terhubung akun Anda.</span>
           <a
-            href={photoUrl}
+            href={openUrl}
             target="_blank"
             rel="noreferrer"
             className="text-blue-400 hover:underline flex items-center gap-1 font-medium"

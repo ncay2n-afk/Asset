@@ -85,29 +85,29 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-semibold text-white">Database Google Spreadsheet</h2>
+                <h2 className="text-sm font-semibold text-white">Database Google Spreadsheet &amp; Drive</h2>
                 <span aria-hidden="true" className="text-slate-600 text-xs">·</span>
                 {hasToken && isSpreadsheetDbActive ? (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-400">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Aktif (10 Tab Tersinkron)</span>
+                    <span>Aktif (11 Tab &amp; Drive Tersinkron)</span>
                   </span>
                 ) : hasToken ? (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-300">
                     <Link2 className="w-3.5 h-3.5" />
-                    <span>Akun Terhubung — Siap Hubungkan Sheet</span>
+                    <span>Google Terhubung — Siap Hubungkan Sheet</span>
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400">
                     <Link2 className="w-3.5 h-3.5" />
-                    <span>Cache Lokal (Login untuk DB Spreadsheet)</span>
+                    <span>Offline Cache (Hubungkan Google untuk DB Cloud)</span>
                   </span>
                 )}
               </div>
               <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">
                 {isMobileLayout
-                  ? 'Database 10 tab di Google Sheets, foto Drive, & email Gmail.'
-                  : 'Seluruh data inventaris, mutasi, servis, stock opname, BAPA, dan master data tersimpan di Google Spreadsheet.'}
+                  ? 'Database utama 11 tab Google Sheets & semua gambar di Google Drive.'
+                  : 'Seluruh data inventaris, mutasi, servis, stock opname, BAPA, master data, & akun tersimpan di Google Spreadsheet serta semua gambar di Google Drive.'}
               </p>
             </div>
           </div>

@@ -13,17 +13,25 @@ import {
   Filter,
   Search,
   ExternalLink,
-  X
+  X,
+  HardDrive,
+  Loader2
 } from 'lucide-react';
 import { MaintenanceRecord, MaintenanceStatus, MaintenanceType, OfficeAsset, MasterVendor } from '../types';
 import { sendGmailMessage } from '../services/gmailService';
+import { uploadAssetFileToDrive, getDriveOpenLink } from '../services/driveService';
 import { CurrencyInput } from './CurrencyInput';
 
 interface MaintenanceViewProps {
   assets: OfficeAsset[];
   records: MaintenanceRecord[];
   onAddRecord: (record: MaintenanceRecord) => void;
-  onCompleteRecord: (recordId: string, actualCost: number, restoreAssetCondition: boolean) => void;
+  onCompleteRecord: (
+    recordId: string,
+    actualCost: number,
+    restoreAssetCondition: boolean,
+    driveInvoiceUrl?: string
+  ) => void;
   token: string | null;
   currentUserEmail: string | null;
   vendors?: MasterVendor[];
@@ -58,6 +66,8 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
   const [completingRecord, setCompletingRecord] = useState<MaintenanceRecord | null>(null);
   const [actualCostInput, setActualCostInput] = useState<number>(0);
   const [restoreStock, setRestoreStock] = useState<boolean>(true);
+  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
+  const [isCompleting, setIsCompleting] = useState(false);
 
   // Email Reminder state
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
@@ -259,6 +269,18 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
 
                     <td className="py-3.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        {r.driveInvoiceUrl && (
+                          <a
+                            href={getDriveOpenLink(r.driveInvoiceUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1"
+                            title="Buka Nota / Foto Servis di Google Drive"
+                          >
+                            <HardDrive className="w-3 h-3" />
+                            <span>Nota</span>
+                          </a>
+                        )}
                         {r.status !== 'Selesai' && (
                           <>
                             <button
@@ -273,6 +295,7 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
                               onClick={() => {
                                 setCompletingRecord(r);
                                 setActualCostInput(r.estimatedCost);
+                                setInvoiceFile(null);
                               }}
                               className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg transition"
                             >
@@ -451,6 +474,18 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
               />
             </div>
 
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Foto Nota / Bukti Servis (Google Drive)
+              </label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setInvoiceFile(e.target.files?.[0] || null)}
+                className="block w-full text-xs text-slate-500 file:mr-2.5 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+              />
+            </div>
+
             <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer p-3 bg-slate-50 rounded-xl border border-slate-200">
               <input
                 type="checkbox"
@@ -458,24 +493,49 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
                 onChange={(e) => setRestoreStock(e.target.checked)}
                 className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
               />
-              <span>Pulihkan kondisi aset ke "Baik" dan kembalikan stok ke Tersedia</span>
+              <span>Pulihkan kondisi aset ke &quot;Baik&quot; dan kembalikan stok ke Tersedia</span>
             </label>
 
             <div className="flex justify-end gap-2 pt-2">
               <button
+                type="button"
+                disabled={isCompleting}
                 onClick={() => setCompletingRecord(null)}
                 className="px-4 py-2 border border-slate-200 text-slate-700 text-xs font-semibold rounded-lg"
               >
                 Batal
               </button>
               <button
-                onClick={() => {
-                  onCompleteRecord(completingRecord.id, actualCostInput, restoreStock);
+                type="button"
+                disabled={isCompleting}
+                onClick={async () => {
+                  setIsCompleting(true);
+                  let driveInvoiceUrl: string | undefined;
+                  try {
+                    if (invoiceFile && token) {
+                      const dateStr = new Date().toISOString().split('T')[0];
+                      const res = await uploadAssetFileToDrive(
+                        token,
+                        invoiceFile,
+                        `NOTA_${completingRecord.id}_${dateStr}.jpg`,
+                        [completingRecord.assetId, 'Maintenance_Invoices'],
+                        `Nota servis ${completingRecord.serviceType} aset ${completingRecord.assetId}`
+                      );
+                      driveInvoiceUrl = res.imageUrl;
+                    }
+                  } catch (err) {
+                    console.warn('Gagal mengunggah nota servis ke Google Drive:', err);
+                  } finally {
+                    setIsCompleting(false);
+                  }
+                  onCompleteRecord(completingRecord.id, actualCostInput, restoreStock, driveInvoiceUrl);
                   setCompletingRecord(null);
+                  setInvoiceFile(null);
                 }}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-xs"
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg shadow-xs inline-flex items-center gap-1.5"
               >
-                Konfirmasi Selesai
+                {isCompleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isCompleting ? 'Mengunggah Nota...' : 'Konfirmasi Selesai'}</span>
               </button>
             </div>
           </div>
