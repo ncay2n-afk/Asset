@@ -17,8 +17,18 @@ import {
   AppUserRole,
   WorkspaceConfig
 } from '../types';
-import { CodeItem } from '../data/assetCodeGenerator';
+import { CodeItem, dedupeCodeItems } from '../data/assetCodeGenerator';
 import { normalizeDriveImageUrl } from './driveService';
+
+function dedupeById<T extends { id: string }>(items: T[]): T[] {
+  const map = new Map<string, T>();
+  for (const item of items) {
+    const id = String(item?.id ?? '').trim();
+    if (!id) continue;
+    map.set(id, { ...item, id });
+  }
+  return Array.from(map.values());
+}
 
 export const TAB_ASSETS = 'Daftar_Aset';
 export const TAB_TRANSACTIONS = 'Riwayat_Mutasi';
@@ -427,34 +437,36 @@ export function parseUserRows(rows: string[][]): AppUserAccount[] {
 }
 
 function parseAssetsRows(rows: string[][]): OfficeAsset[] {
-  return rows
-    .filter((r) => r[0] && String(r[0]).trim() !== '')
-    .map((r) => ({
-      id: String(r[0] ?? ''),
-      name: String(r[1] ?? '') || 'Aset Tanpa Nama',
-      category: (r[2] as AssetCategory) || 'IT & Elektronik',
-      sku: String(r[3] ?? ''),
-      totalStock: Number(r[4]) || 0,
-      availableStock: Number(r[5]) || 0,
-      borrowedStock: Number(r[6]) || 0,
-      damagedStock: Number(r[7]) || 0,
-      unit: String(r[8] ?? '') || 'Unit',
-      location: String(r[9] ?? '') || 'Kantor',
-      condition: (r[10] as AssetCondition) || 'Baik',
-      status: (r[11] as AssetStatus) || 'Tersedia',
-      purchaseDate: String(r[12] ?? ''),
-      purchasePrice: Number(r[13]) || 0,
-      custodian: String(r[14] ?? ''),
-      lastPhotoUrl: normalizeDriveImageUrl(r[15] || ''),
-      lastPhotoDate: String(r[16] ?? ''),
-      notes: String(r[17] ?? ''),
-      updatedAt: String(r[18] ?? '') || new Date().toISOString(),
-      serialNumber: r[19] ? String(r[19]) : undefined,
-      usefulLifeYears: r[20] ? Number(r[20]) : undefined,
-      residualValue: r[21] ? Number(r[21]) : undefined,
-      warrantyExpiryDate: r[22] ? String(r[22]) : undefined,
-      taxExpiryDate: r[23] ? String(r[23]) : undefined,
-    }));
+  return dedupeById(
+    rows
+      .filter((r) => r[0] && String(r[0]).trim() !== '')
+      .map((r) => ({
+        id: String(r[0] ?? '').trim(),
+        name: String(r[1] ?? '') || 'Aset Tanpa Nama',
+        category: (r[2] as AssetCategory) || 'IT & Elektronik',
+        sku: String(r[3] ?? ''),
+        totalStock: Number(r[4]) || 0,
+        availableStock: Number(r[5]) || 0,
+        borrowedStock: Number(r[6]) || 0,
+        damagedStock: Number(r[7]) || 0,
+        unit: String(r[8] ?? '') || 'Unit',
+        location: String(r[9] ?? '') || 'Kantor',
+        condition: (r[10] as AssetCondition) || 'Baik',
+        status: (r[11] as AssetStatus) || 'Tersedia',
+        purchaseDate: String(r[12] ?? ''),
+        purchasePrice: Number(r[13]) || 0,
+        custodian: String(r[14] ?? ''),
+        lastPhotoUrl: normalizeDriveImageUrl(r[15] || ''),
+        lastPhotoDate: String(r[16] ?? ''),
+        notes: String(r[17] ?? ''),
+        updatedAt: String(r[18] ?? '') || new Date().toISOString(),
+        serialNumber: r[19] ? String(r[19]) : undefined,
+        usefulLifeYears: r[20] ? Number(r[20]) : undefined,
+        residualValue: r[21] ? Number(r[21]) : undefined,
+        warrantyExpiryDate: r[22] ? String(r[22]) : undefined,
+        taxExpiryDate: r[23] ? String(r[23]) : undefined,
+      }))
+  );
 }
 
 /**
@@ -602,44 +614,52 @@ export function parseDatabaseFromTabs(
 
   const locRows = stripHeader(TAB_LOCATIONS);
   if (locRows) {
-    result.locations = locRows
-      .filter((r) => r[0])
-      .map((r) => ({
-        id: String(r[0] ?? ''),
-        buildingName: String(r[1] ?? ''),
-        floor: String(r[2] ?? ''),
-        roomName: String(r[3] ?? ''),
-        notes: r[4] ? String(r[4]) : undefined,
-      }));
+    result.locations = dedupeById(
+      locRows
+        .filter((r) => r[0])
+        .map((r) => ({
+          id: String(r[0] ?? '').trim(),
+          buildingName: String(r[1] ?? ''),
+          floor: String(r[2] ?? ''),
+          roomName: String(r[3] ?? ''),
+          notes: r[4] ? String(r[4]) : undefined,
+        }))
+    );
   }
 
   const vendorRows = stripHeader(TAB_VENDORS);
   if (vendorRows) {
-    result.vendors = vendorRows
-      .filter((r) => r[0])
-      .map((r) => ({
-        id: String(r[0] ?? ''),
-        name: String(r[1] ?? ''),
-        serviceCategory: String(r[2] ?? ''),
-        phone: String(r[3] ?? ''),
-        email: r[4] ? String(r[4]) : undefined,
-        address: r[5] ? String(r[5]) : undefined,
-        picName: String(r[6] ?? ''),
-      }));
+    result.vendors = dedupeById(
+      vendorRows
+        .filter((r) => r[0])
+        .map((r) => ({
+          id: String(r[0] ?? '').trim(),
+          name: String(r[1] ?? ''),
+          serviceCategory: String(r[2] ?? ''),
+          phone: String(r[3] ?? ''),
+          email: r[4] ? String(r[4]) : undefined,
+          address: r[5] ? String(r[5]) : undefined,
+          picName: String(r[6] ?? ''),
+        }))
+    );
   }
 
   const divRows = stripHeader(TAB_DIVISIONS);
   if (divRows && divRows.length > 0) {
-    result.customDivisions = divRows
-      .filter((r) => r[0] && r[1])
-      .map((r) => ({ code: String(r[0]), name: String(r[1]) }));
+    result.customDivisions = dedupeCodeItems(
+      divRows
+        .filter((r) => r[0] && r[1])
+        .map((r) => ({ code: String(r[0]).trim(), name: String(r[1]).trim() }))
+    );
   }
 
   const subRows = stripHeader(TAB_SUB_KELOMPOKS);
   if (subRows && subRows.length > 0) {
-    result.customSubKelompoks = subRows
-      .filter((r) => r[0] && r[1])
-      .map((r) => ({ code: String(r[0]), name: String(r[1]) }));
+    result.customSubKelompoks = dedupeCodeItems(
+      subRows
+        .filter((r) => r[0] && r[1])
+        .map((r) => ({ code: String(r[0]).trim(), name: String(r[1]).trim() }))
+    );
   }
 
   const settingsRows = stripHeader(TAB_SETTINGS);

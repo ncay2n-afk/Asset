@@ -32,6 +32,10 @@ interface DashboardKPIProps {
   selectedStatusFilter: string | null;
   isMobileLayout?: boolean;
   canMutateAssets?: boolean;
+  syncPhase?: string;
+  lastSyncDurationMs?: number | null;
+  syncError?: string | null;
+  onQuickPull?: () => void;
 }
 
 export const DashboardKPI: React.FC<DashboardKPIProps> = ({
@@ -49,6 +53,10 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
   selectedStatusFilter,
   isMobileLayout = false,
   canMutateAssets = true,
+  syncPhase,
+  lastSyncDurationMs = null,
+  syncError = null,
+  onQuickPull,
 }) => {
   const totalAssetsCount = assets.length;
   const totalUnits = assets.reduce((acc, curr) => acc + (curr.totalStock || 0), 0);
@@ -110,7 +118,26 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
                 <span aria-hidden="true" className="text-slate-600 text-xs">
                   ·
                 </span>
-                {hasUnsavedChanges ? (
+                {isSyncing ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-300">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>{syncPhase || 'Menyinkronkan data dari Spreadsheet...'}</span>
+                  </span>
+                ) : syncError ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-300">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>Gagal memuat otomatis</span>
+                    {onQuickPull && (
+                      <button
+                        type="button"
+                        onClick={onQuickPull}
+                        className="underline text-amber-300 hover:text-amber-200 cursor-pointer ml-1"
+                      >
+                        Muat Ulang
+                      </button>
+                    )}
+                  </span>
+                ) : hasUnsavedChanges ? (
                   <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300">
                     <AlertTriangle className="w-3.5 h-3.5" />
                     <span>
@@ -120,7 +147,12 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
                 ) : isBridgeConnected ? (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-400">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Bridge Online Aktif (Semua Device Sinkron)</span>
+                    <span>
+                      Bridge Online Aktif
+                      {lastSyncDurationMs
+                        ? ` · ${(lastSyncDurationMs / 1000).toFixed(1)} dtk`
+                        : ' (Semua Device Sinkron)'}
+                    </span>
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400">
@@ -191,6 +223,34 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
       </div>
 
       {/* KPI Stats Grid */}
+      {isSyncing && assets.length === 0 ? (
+        <div
+          className={
+            isMobileLayout
+              ? 'grid grid-cols-2 gap-2.5'
+              : 'grid grid-cols-2 lg:grid-cols-5 gap-3.5'
+          }
+        >
+          {[0, 1, 2, 3, 4].map((idx) => (
+            <div
+              key={idx}
+              className={`${
+                idx === 0
+                  ? isMobileLayout
+                    ? 'col-span-2 p-3.5'
+                    : 'col-span-2 lg:col-span-1 p-4'
+                  : isMobileLayout
+                  ? 'p-3.5'
+                  : 'p-4'
+              } bg-white rounded-2xl border border-slate-200 animate-pulse space-y-2.5`}
+            >
+              <div className="h-3 w-24 bg-slate-200 rounded" />
+              <div className="h-6 w-28 bg-slate-200 rounded" />
+              <div className="h-2.5 w-20 bg-slate-100 rounded" />
+            </div>
+          ))}
+        </div>
+      ) : (
       <div
         className={
           isMobileLayout
@@ -323,6 +383,7 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
           </div>
         </button>
       </div>
+      )}
     </div>
   );
 };

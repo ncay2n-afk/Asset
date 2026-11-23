@@ -1116,9 +1116,9 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {customDivisions.map((div) => (
+            {customDivisions.map((div, idx) => (
               <div
-                key={div.code}
+                key={`${div.code}-${idx}`}
                 className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between"
               >
                 <div className="flex items-center gap-3">
@@ -1238,9 +1238,9 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {customSubKelompoks.map((sub) => (
+            {customSubKelompoks.map((sub, idx) => (
               <div
-                key={sub.code}
+                key={`${sub.code}-${idx}`}
                 className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between"
               >
                 <div className="flex items-center gap-3">

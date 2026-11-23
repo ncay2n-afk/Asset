@@ -300,8 +300,8 @@ export const AddAssetModal: React.FC<AddAssetModalProps> = ({
                   onChange={(e) => setKodeDivisi(e.target.value)}
                   className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold"
                 >
-                  {activeDivisions.map((d) => (
-                    <option key={d.code} value={d.code}>
+                  {activeDivisions.map((d, idx) => (
+                    <option key={`${d.code}-${idx}`} value={d.code}>
                       [{d.code}] {d.name}
                     </option>
                   ))}
@@ -318,8 +318,8 @@ export const AddAssetModal: React.FC<AddAssetModalProps> = ({
                   onChange={(e) => setKodeSubKelompok(e.target.value)}
                   className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold"
                 >
-                  {activeSubKelompoks.map((s) => (
-                    <option key={s.code} value={s.code}>
+                  {activeSubKelompoks.map((s, idx) => (
+                    <option key={`${s.code}-${idx}`} value={s.code}>
                       [{s.code}] {s.name}
                     </option>
                   ))}

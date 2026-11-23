@@ -83,9 +83,13 @@ export const SpreadsheetBridgeHelpModal: React.FC<SpreadsheetBridgeHelpModalProp
 
         {/* Body */}
         <div className="p-5 space-y-4 overflow-y-auto text-xs text-slate-700">
-          <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950 leading-relaxed">
-            Dengan <strong>Cloud Bridge Apps Script</strong>, HP, tablet, dan laptop seluruh staf cukup login memakai{' '}
-            <strong>Username &amp; Kata Sandi dari tab Master_Pengguna</strong> — tanpa perlu login akun Google atau OAuth pop-up.
+          <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950 leading-relaxed space-y-1">
+            <p className="font-bold text-emerald-900">
+              Cloud Bridge v2 Turbo (Cache Server + Delta Sync)
+            </p>
+            <p>
+              Skrip <code>Code.gs</code> terbaru sudah dilengkapi <strong>CacheService 5 menit</strong>, cache logo Drive 6 jam, pembacaan sheet 1-panggilan, dan <strong>Delta Save</strong> (hanya menyimpan tab yang berubah) agar loading dari GitHub Pages &amp; HP jauh lebih cepat tanpa perlu login Google.
+            </p>
           </div>
 
           {/* 3-Step Setup */}

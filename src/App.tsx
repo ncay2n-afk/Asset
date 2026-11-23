@@ -21,7 +21,8 @@ import { INITIAL_COMPANY_SETTINGS } from './data/mockInitialData';
 import {
   KODE_DIVISI_LIST,
   KODE_SUB_KELOMPOK_LIST,
-  CodeItem
+  CodeItem,
+  dedupeCodeItems
 } from './data/assetCodeGenerator';
 import { Navbar, AppTab } from './components/Navbar';
 import {
@@ -62,7 +63,6 @@ import {
   DEFAULT_CLOUD_BRIDGE_KEY,
   extractSpreadsheetId,
   isValidBridgeUrl,
-  pingCloudBridge,
   fetchUsersViaBridge,
   pullFullDatabaseViaBridge,
   saveFullDatabaseViaBridge,
@@ -96,6 +96,7 @@ const LOCAL_STORAGE_CONFIG_KEY = 'aset_kantor_config_v3';
 const LOCAL_STORAGE_VIEW_MODE_KEY = 'aset_kantor_view_mode';
 const LOCAL_STORAGE_DIRTY_KEY = 'aset_kantor_dirty_count_v1';
 const LOCAL_STORAGE_LOGO_FALLBACK_KEY = 'aset_kantor_logo_fallback_v1';
+const LOCAL_STORAGE_TAB_HASHES_KEY = 'aset_kantor_tab_hashes_v1';
 
 type ViewMode = 'auto' | 'web' | 'mobile';
 
@@ -259,7 +260,7 @@ export default function App() {
   const [customDivisions, setCustomDivisions] = useState<CodeItem[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_DIV_KEY);
-      return saved ? JSON.parse(saved) : KODE_DIVISI_LIST;
+      return saved ? dedupeCodeItems(JSON.parse(saved)) : KODE_DIVISI_LIST;
     } catch {
       return KODE_DIVISI_LIST;
     }
@@ -268,7 +269,7 @@ export default function App() {
   const [customSubKelompoks, setCustomSubKelompoks] = useState<CodeItem[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_SUB_KEY);
-      return saved ? JSON.parse(saved) : KODE_SUB_KELOMPOK_LIST;
+      return saved ? dedupeCodeItems(JSON.parse(saved)) : KODE_SUB_KELOMPOK_LIST;
     } catch {
       return KODE_SUB_KELOMPOK_LIST;
     }
@@ -293,8 +294,22 @@ export default function App() {
   const hasMountedDirtyRef = useRef(false);
   const skipNextDirtyMarkRef = useRef(false);
 
-  // Sync state & Confirmation modal
+  // Sync state, Speed metrics, & Confirmation modal
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncPhase, setSyncPhase] = useState<string>('');
+  const [lastSyncDurationMs, setLastSyncDurationMs] = useState<number | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [isPrefetchingDb, setIsPrefetchingDb] = useState(false);
+  const [prefetchReady, setPrefetchReady] = useState(false);
+  const inFlightPullRef = useRef<Promise<void> | null>(null);
+  const lastSyncedTabHashesRef = useRef<Record<string, string> | null>((() => {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_TAB_HASHES_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })());
   const [pendingSheetAction, setPendingSheetAction] =
     useState<SpreadsheetConfirmAction | null>(null);
   const skipNextAutoSyncRef = useRef(false);
@@ -634,67 +649,104 @@ export default function App() {
     ]
   );
 
-  // Pull full 11-tab DB quietly or interactively
+  // Pull full 11-tab DB quietly or interactively (dedupes concurrent in-flight pulls)
   const pullDatabaseInternal = useCallback(
     async (
       bridgeUrl: string,
       bridgeKey?: string,
       sheetId?: string | null,
-      showSuccessToast: boolean = true
+      showSuccessToast: boolean = true,
+      forceFresh: boolean = false
     ) => {
-      const loaded = await pullFullDatabaseViaBridge(bridgeUrl, bridgeKey, sheetId);
-      skipNextAutoSyncRef.current = true;
-      skipNextDirtyMarkRef.current = true;
-
-      if (loaded.assets) setAssets(loaded.assets);
-      if (loaded.transactions) setTransactions(loaded.transactions);
-      if (loaded.maintenanceRecords) setMaintenanceRecords(loaded.maintenanceRecords);
-      if (loaded.stockOpnameSessions) setStockOpnameSessions(loaded.stockOpnameSessions);
-      if (loaded.disposalRecords) setDisposalRecords(loaded.disposalRecords);
-      if (loaded.locations) setLocations(loaded.locations);
-      if (loaded.vendors) setVendors(loaded.vendors);
-      if (loaded.customDivisions) setCustomDivisions(loaded.customDivisions);
-      if (loaded.customSubKelompoks) setCustomSubKelompoks(loaded.customSubKelompoks);
-      if (loaded.companyBranding?.logoDataUrl) {
-        setLogoFallbackDataUrl(loaded.companyBranding.logoDataUrl);
-      }
-      if (loaded.companySettings) {
-        setCompanySettings((prev) => ({
-          ...prev,
-          ...loaded.companySettings,
-          logoUrl:
-            loaded.companySettings?.logoUrl ||
-            loaded.companyBranding?.logoUrl ||
-            prev.logoUrl,
-        }));
-      }
-      if (loaded.users && loaded.users.length > 0) {
-        setAppUsers(loaded.users);
+      if (inFlightPullRef.current && !forceFresh) {
+        return inFlightPullRef.current;
       }
 
-      setUnsavedChangesCount(0);
-      setWorkspaceConfig((prev) => ({
-        ...prev,
-        ...(loaded.workspaceSettings || {}),
-        spreadsheetId: loaded.spreadsheetId || prev.spreadsheetId,
-        spreadsheetName: loaded.spreadsheetName || prev.spreadsheetName,
-        spreadsheetUrl: loaded.spreadsheetUrl || prev.spreadsheetUrl,
-        lastSyncedAt: new Date().toISOString(),
-      }));
+      const task = (async () => {
+        setSyncError(null);
+        setSyncPhase('Mengunduh data Spreadsheet...');
+        try {
+          const loaded = await pullFullDatabaseViaBridge(bridgeUrl, bridgeKey, sheetId, {
+            forceFresh,
+          });
+          skipNextAutoSyncRef.current = true;
+          skipNextDirtyMarkRef.current = true;
 
-      if (showSuccessToast) {
-        const assetCount = loaded.assets?.length ?? 0;
-        const trxCount = loaded.transactions?.length ?? 0;
-        setToastMessage({
-          type: 'success',
-          text: `Data terbaru dimuat dari Spreadsheet (${assetCount} aset, ${trxCount} riwayat mutasi).`,
-        });
-      }
+          if (loaded.assets) setAssets(loaded.assets);
+          if (loaded.transactions) setTransactions(loaded.transactions);
+          if (loaded.maintenanceRecords) setMaintenanceRecords(loaded.maintenanceRecords);
+          if (loaded.stockOpnameSessions) setStockOpnameSessions(loaded.stockOpnameSessions);
+          if (loaded.disposalRecords) setDisposalRecords(loaded.disposalRecords);
+          if (loaded.locations) setLocations(loaded.locations);
+          if (loaded.vendors) setVendors(loaded.vendors);
+          if (loaded.customDivisions) setCustomDivisions(dedupeCodeItems(loaded.customDivisions));
+          if (loaded.customSubKelompoks)
+            setCustomSubKelompoks(dedupeCodeItems(loaded.customSubKelompoks));
+          if (loaded.companyBranding?.logoDataUrl) {
+            setLogoFallbackDataUrl(loaded.companyBranding.logoDataUrl);
+          }
+          if (loaded.companySettings) {
+            setCompanySettings((prev) => ({
+              ...prev,
+              ...loaded.companySettings,
+              logoUrl:
+                loaded.companySettings?.logoUrl ||
+                loaded.companyBranding?.logoUrl ||
+                prev.logoUrl,
+            }));
+          }
+          if (loaded.users && loaded.users.length > 0) {
+            setAppUsers(loaded.users);
+          }
+
+          if (loaded.tabHashes) {
+            lastSyncedTabHashesRef.current = loaded.tabHashes;
+            try {
+              localStorage.setItem(
+                LOCAL_STORAGE_TAB_HASHES_KEY,
+                JSON.stringify(loaded.tabHashes)
+              );
+            } catch {}
+          }
+
+          setLastSyncDurationMs(loaded.durationMs);
+          setPrefetchReady(true);
+          setUnsavedChangesCount(0);
+          setWorkspaceConfig((prev) => ({
+            ...prev,
+            ...(loaded.workspaceSettings || {}),
+            spreadsheetId: loaded.spreadsheetId || prev.spreadsheetId,
+            spreadsheetName: loaded.spreadsheetName || prev.spreadsheetName,
+            spreadsheetUrl: loaded.spreadsheetUrl || prev.spreadsheetUrl,
+            lastSyncedAt: new Date().toISOString(),
+          }));
+
+          if (showSuccessToast) {
+            const assetCount = loaded.assets?.length ?? 0;
+            const trxCount = loaded.transactions?.length ?? 0;
+            const sec = (loaded.durationMs / 1000).toFixed(1);
+            const modeLabel = loaded.fromServerCache ? 'Cache Cepat' : 'Live Sheet';
+            setToastMessage({
+              type: 'success',
+              text: `Data dimuat dalam ${sec} dtk (${modeLabel}) · ${assetCount} aset, ${trxCount} mutasi.`,
+            });
+          }
+        } catch (err: any) {
+          setSyncError(err?.message || 'Gagal memuat database.');
+          throw err;
+        } finally {
+          inFlightPullRef.current = null;
+          setSyncPhase('');
+        }
+      })();
+
+      inFlightPullRef.current = task;
+      return task;
     },
     []
   );
 
-  // Boot Effect: Handle QR URL param (?asset=...), strip Share URL params (?bridge=...&sheet=...&key=...), and fetch Master_Pengguna
+  // Boot Effect: Handle QR URL param (?asset=...), strip Share URL params (?bridge=...&sheet=...&key=...), fetch Master_Pengguna, & prefetch DB in background
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -718,20 +770,34 @@ export default function App() {
       }
     } catch {}
 
-    // Auto-pull users on startup so any device opening the link sees active Spreadsheet accounts
-    if (isValidBridgeUrl(workspaceConfig.cloudBridgeUrl) || workspaceConfig.spreadsheetId) {
-      void handleRefreshUsersFromSheet(
-        workspaceConfig.cloudBridgeUrl,
-        workspaceConfig.cloudBridgeKey,
-        workspaceConfig.spreadsheetId,
-        true
-      );
-    }
+    const bootCloudSync = async () => {
+      const bUrl = workspaceConfig.cloudBridgeUrl;
+      const bKey = workspaceConfig.cloudBridgeKey;
+      const sId = workspaceConfig.spreadsheetId;
+
+      if (!isValidBridgeUrl(bUrl) && !sId) return;
+
+      await handleRefreshUsersFromSheet(bUrl, bKey, sId, true);
+
+      // Prefetch full DB quietly while user types login credentials so login feels instant
+      if (isValidBridgeUrl(bUrl) && !hasUnsavedChanges) {
+        setIsPrefetchingDb(true);
+        try {
+          await pullDatabaseInternal(bUrl!, bKey, sId, false, false);
+        } catch {
+          // Silent prefetch failure; user will retry smoothly upon login
+        } finally {
+          setIsPrefetchingDb(false);
+        }
+      }
+    };
+
+    void bootCloudSync();
     // Run only once on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Connect & Test Cloud Bridge Handler
+  // Connect & Test Cloud Bridge Handler (Single roundtrip via get_users instead of ping + get_users)
   const handleConnectBridge = useCallback(
     async (bridgeUrlInput: string, bridgeKeyInput?: string, sheetIdInput?: string | null) => {
       const cleanUrl = bridgeUrlInput.trim();
@@ -757,23 +823,10 @@ export default function App() {
       }));
 
       if (cleanUrl) {
-        const ping = await pingCloudBridge(
-          cleanUrl,
-          cleanKey,
-          cleanSheetId || workspaceConfig.spreadsheetId
-        );
-        setWorkspaceConfig((prev) => ({
-          ...prev,
-          cloudBridgeUrl: cleanUrl,
-          cloudBridgeKey: cleanKey || undefined,
-          spreadsheetId: ping.spreadsheetId || prev.spreadsheetId,
-          spreadsheetName: ping.spreadsheetName || prev.spreadsheetName,
-          spreadsheetUrl: ping.spreadsheetUrl || prev.spreadsheetUrl,
-        }));
         await handleRefreshUsersFromSheet(
           cleanUrl,
           cleanKey,
-          ping.spreadsheetId || cleanSheetId,
+          cleanSheetId || workspaceConfig.spreadsheetId,
           false
         );
       } else if (cleanSheetId) {
@@ -798,14 +851,21 @@ export default function App() {
       text: `Selamat datang, ${account.fullName} (${account.role.replace('_', ' ')})!`,
     });
 
-    // Automatically pull live 11-tab DB on login if connected & no pending local edits
+    // If background prefetch already finished cleanly, skip redundant fetch!
+    if (prefetchReady && !inFlightPullRef.current) {
+      return;
+    }
+
+    // Automatically pull live 11-tab DB on login (or await in-flight prefetch)
     if (isValidBridgeUrl(workspaceConfig.cloudBridgeUrl) && !hasUnsavedChanges) {
       try {
         setIsSyncing(true);
+        setSyncPhase('Memuat database dari Spreadsheet...');
         await pullDatabaseInternal(
           workspaceConfig.cloudBridgeUrl!,
           workspaceConfig.cloudBridgeKey,
           workspaceConfig.spreadsheetId,
+          false,
           false
         );
         // Keep fresh login timestamp in memory
@@ -819,6 +879,7 @@ export default function App() {
         console.warn('Sinkronisasi otomatis saat login dilewati:', err);
       } finally {
         setIsSyncing(false);
+        setSyncPhase('');
       }
     }
   };
@@ -875,6 +936,13 @@ export default function App() {
     const sheetId = workspaceConfig.spreadsheetId;
 
     setIsSyncing(true);
+    setSyncPhase(
+      pendingSheetAction === 'pull_full_db'
+        ? 'Mengambil data terbaru...'
+        : pendingSheetAction === 'init_db'
+        ? 'Menyiapkan 11 tab Spreadsheet...'
+        : 'Menyimpan perubahan ke Spreadsheet...'
+    );
     try {
       let dbPayload = buildFullDatabasePayload();
 
@@ -884,6 +952,7 @@ export default function App() {
         dbPayload.companySettings?.logoUrl?.startsWith('data:image/')
       ) {
         try {
+          setSyncPhase('Mengunggah logo ke Google Drive...');
           const inlineLogo = dbPayload.companySettings.logoUrl;
           const logoBlob = dataUrlToBlob(inlineLogo);
           const ext = logoBlob.type.includes('png') ? 'png' : 'jpg';
@@ -922,8 +991,16 @@ export default function App() {
           bridgeUrl,
           dbPayload,
           bridgeKey,
-          initRes.spreadsheetId || sheetId
+          initRes.spreadsheetId || sheetId,
+          null
         );
+        if (saveRes.savedTabHashes) {
+          lastSyncedTabHashesRef.current = saveRes.savedTabHashes;
+          try {
+            localStorage.setItem(LOCAL_STORAGE_TAB_HASHES_KEY, JSON.stringify(saveRes.savedTabHashes));
+          } catch {}
+        }
+        if (saveRes.durationMs) setLastSyncDurationMs(saveRes.durationMs);
         skipNextAutoSyncRef.current = true;
         skipNextDirtyMarkRef.current = true;
         setUnsavedChangesCount(0);
@@ -939,12 +1016,21 @@ export default function App() {
           text: `11 Tab Database "${saveRes.spreadsheetName || 'Spreadsheet'}" siap & semua data berhasil disimpan!`,
         });
       } else if (pendingSheetAction === 'update_db') {
+        setSyncPhase('Mengirim tab yang berubah...');
         const saveRes = await saveFullDatabaseViaBridge(
           bridgeUrl,
           dbPayload,
           bridgeKey,
-          sheetId
+          sheetId,
+          lastSyncedTabHashesRef.current
         );
+        if (saveRes.savedTabHashes) {
+          lastSyncedTabHashesRef.current = saveRes.savedTabHashes;
+          try {
+            localStorage.setItem(LOCAL_STORAGE_TAB_HASHES_KEY, JSON.stringify(saveRes.savedTabHashes));
+          } catch {}
+        }
+        if (saveRes.durationMs) setLastSyncDurationMs(saveRes.durationMs);
         skipNextAutoSyncRef.current = true;
         skipNextDirtyMarkRef.current = true;
         setUnsavedChangesCount(0);
@@ -955,17 +1041,29 @@ export default function App() {
           spreadsheetUrl: saveRes.spreadsheetUrl || prev.spreadsheetUrl,
           lastSyncedAt: saveRes.updatedAt || new Date().toISOString(),
         }));
+        const sec = saveRes.durationMs ? ` (${(saveRes.durationMs / 1000).toFixed(1)} dtk)` : '';
+        const tabNote = saveRes.syncedTabsCount && saveRes.syncedTabsCount < 11
+          ? `${saveRes.syncedTabsCount} tab berubah`
+          : '11 tab';
         setToastMessage({
           type: 'success',
-          text: 'Database Spreadsheet (11 tab) berhasil diperbarui dan aktif untuk semua device!',
+          text: `Database Spreadsheet (${tabNote}) berhasil diperbarui${sec}!`,
         });
       } else if (pendingSheetAction === 'enable_auto_sync') {
         const saveRes = await saveFullDatabaseViaBridge(
           bridgeUrl,
           dbPayload,
           bridgeKey,
-          sheetId
+          sheetId,
+          lastSyncedTabHashesRef.current
         );
+        if (saveRes.savedTabHashes) {
+          lastSyncedTabHashesRef.current = saveRes.savedTabHashes;
+          try {
+            localStorage.setItem(LOCAL_STORAGE_TAB_HASHES_KEY, JSON.stringify(saveRes.savedTabHashes));
+          } catch {}
+        }
+        if (saveRes.durationMs) setLastSyncDurationMs(saveRes.durationMs);
         skipNextAutoSyncRef.current = true;
         skipNextDirtyMarkRef.current = true;
         setUnsavedChangesCount(0);
@@ -979,10 +1077,10 @@ export default function App() {
         }));
         setToastMessage({
           type: 'success',
-          text: 'Mode Auto-Sync Bridge aktif! Semua perubahan otomatis memperbarui Google Spreadsheet.',
+          text: 'Mode Auto-Sync Bridge aktif! Perubahan otomatis memperbarui Google Spreadsheet.',
         });
       } else if (pendingSheetAction === 'pull_full_db') {
-        await pullDatabaseInternal(bridgeUrl, bridgeKey, sheetId, true);
+        await pullDatabaseInternal(bridgeUrl, bridgeKey, sheetId, true, true);
       }
     } catch (err: any) {
       console.error(err);
@@ -992,6 +1090,7 @@ export default function App() {
       });
     } finally {
       setIsSyncing(false);
+      setSyncPhase('');
       setPendingSheetAction(null);
     }
   }, [
@@ -1003,7 +1102,7 @@ export default function App() {
     pullDatabaseInternal,
   ]);
 
-  // Debounced Real-Time Auto-Sync when user explicitly enables autoSyncSpreadsheet
+  // Debounced Real-Time Auto-Sync when user explicitly enables autoSyncSpreadsheet (uses delta tabs!)
   useEffect(() => {
     if (!hasAutoSyncMountedRef.current) {
       hasAutoSyncMountedRef.current = true;
@@ -1025,12 +1124,21 @@ export default function App() {
     const timer = setTimeout(async () => {
       try {
         setIsSyncing(true);
+        setSyncPhase('Auto-sync tab berubah...');
         const saveRes = await saveFullDatabaseViaBridge(
           bridgeUrl,
           payload,
           bridgeKey,
-          sheetId
+          sheetId,
+          lastSyncedTabHashesRef.current
         );
+        if (saveRes.savedTabHashes) {
+          lastSyncedTabHashesRef.current = saveRes.savedTabHashes;
+          try {
+            localStorage.setItem(LOCAL_STORAGE_TAB_HASHES_KEY, JSON.stringify(saveRes.savedTabHashes));
+          } catch {}
+        }
+        if (saveRes.durationMs) setLastSyncDurationMs(saveRes.durationMs);
         skipNextDirtyMarkRef.current = true;
         setUnsavedChangesCount(0);
         setWorkspaceConfig((prev) => ({
@@ -1044,6 +1152,7 @@ export default function App() {
         console.warn('Auto-sync Cloud Bridge gagal:', err);
       } finally {
         setIsSyncing(false);
+        setSyncPhase('');
       }
     }, 1500);
 
@@ -1055,6 +1164,33 @@ export default function App() {
     workspaceConfig.spreadsheetId,
     workspaceConfig.autoSyncSpreadsheet,
     buildFullDatabasePayload,
+  ]);
+
+  // Quick retry / fresh pull without confirmation when retrying an initial fetch
+  const handleQuickRetryPull = useCallback(async () => {
+    if (!isValidBridgeUrl(workspaceConfig.cloudBridgeUrl)) return;
+    setIsSyncing(true);
+    try {
+      await pullDatabaseInternal(
+        workspaceConfig.cloudBridgeUrl!,
+        workspaceConfig.cloudBridgeKey,
+        workspaceConfig.spreadsheetId,
+        true,
+        true
+      );
+    } catch (err: any) {
+      setToastMessage({
+        type: 'error',
+        text: err?.message || 'Gagal memuat database dari Spreadsheet.',
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [
+    workspaceConfig.cloudBridgeUrl,
+    workspaceConfig.cloudBridgeKey,
+    workspaceConfig.spreadsheetId,
+    pullDatabaseInternal,
   ]);
 
   // Trigger Update Database Confirmation Modal (or guide user to Bridge setup if disconnected)
@@ -1367,6 +1503,10 @@ export default function App() {
         hasUnsavedChanges={hasUnsavedChanges}
         unsavedChangesCount={unsavedChangesCount}
         isSyncing={isSyncing}
+        syncPhase={syncPhase}
+        lastSyncDurationMs={lastSyncDurationMs}
+        syncError={syncError}
+        onQuickPull={handleQuickRetryPull}
         spreadsheetUrl={workspaceConfig.spreadsheetUrl}
         onUpdateDatabase={handleUpdateDatabase}
         onPullFromSheet={handlePullFromSheet}
@@ -1393,6 +1533,7 @@ export default function App() {
           selectedStatusFilter={selectedStatusFilter}
           onClearStatusFilter={() => setSelectedStatusFilter(null)}
           isMobileLayout={isMobileLayout}
+          isLoadingInitial={isSyncing}
         />
       )}
 
@@ -1503,26 +1644,26 @@ export default function App() {
             onUpdateCompanySettings={(cfg) => setCompanySettings(cfg)}
             customDivisions={customDivisions}
             onAddDivision={(div) =>
-              setCustomDivisions((prev) => [...prev, div])
+              setCustomDivisions((prev) => dedupeCodeItems([...prev, div]))
             }
             onUpdateDivision={(oldCode, updated) =>
               setCustomDivisions((prev) =>
-                prev.map((d) => (d.code === oldCode ? updated : d))
+                dedupeCodeItems(prev.map((d) => (d.code === oldCode ? updated : d)))
               )
             }
             onDeleteDivision={(code) =>
               setCustomDivisions((prev) => prev.filter((d) => d.code !== code))
             }
             onImportDivisions={(newDivs) =>
-              setCustomDivisions((prev) => [...newDivs, ...prev])
+              setCustomDivisions((prev) => dedupeCodeItems([...prev, ...newDivs]))
             }
             customSubKelompoks={customSubKelompoks}
             onAddSubKelompok={(sub) =>
-              setCustomSubKelompoks((prev) => [...prev, sub])
+              setCustomSubKelompoks((prev) => dedupeCodeItems([...prev, sub]))
             }
             onUpdateSubKelompok={(oldCode, updated) =>
               setCustomSubKelompoks((prev) =>
-                prev.map((s) => (s.code === oldCode ? updated : s))
+                dedupeCodeItems(prev.map((s) => (s.code === oldCode ? updated : s)))
               )
             }
             onDeleteSubKelompok={(code) =>
@@ -1531,7 +1672,7 @@ export default function App() {
               )
             }
             onImportSubKelompoks={(newSubs) =>
-              setCustomSubKelompoks((prev) => [...newSubs, ...prev])
+              setCustomSubKelompoks((prev) => dedupeCodeItems([...prev, ...newSubs]))
             }
             allData={{
               assets,
@@ -1554,9 +1695,9 @@ export default function App() {
               if (restored.companySettings)
                 setCompanySettings(restored.companySettings);
               if (restored.customDivisions)
-                setCustomDivisions(restored.customDivisions);
+                setCustomDivisions(dedupeCodeItems(restored.customDivisions));
               if (restored.customSubKelompoks)
-                setCustomSubKelompoks(restored.customSubKelompoks);
+                setCustomSubKelompoks(dedupeCodeItems(restored.customSubKelompoks));
               if (restored.appUsers) setAppUsers(restored.appUsers);
             }}
             appUsers={appUsers}
@@ -1743,6 +1884,9 @@ export default function App() {
           onOpenBridgeHelp={() => setIsBridgeHelpOpen(true)}
           hasQrParam={Boolean(initialScanQuery)}
           onOpenQrResult={() => setIsScanModalOpen(true)}
+          isPrefetchingDb={isPrefetchingDb}
+          prefetchReady={prefetchReady}
+          lastSyncDurationMs={lastSyncDurationMs}
         />
 
         <SpreadsheetBridgeHelpModal
@@ -1834,6 +1978,8 @@ export default function App() {
             spreadsheetUrl={workspaceConfig.spreadsheetUrl}
             companySettings={companySettings}
             logoFallbackUrl={logoFallbackDataUrl}
+            syncPhase={syncPhase}
+            lastSyncDurationMs={lastSyncDurationMs}
           />
           {!isViewportMobile ? (
             renderDesktopModeSwitcher()
@@ -1873,6 +2019,7 @@ export default function App() {
                 hasUnsavedChanges={hasUnsavedChanges}
                 unsavedChangesCount={unsavedChangesCount}
                 isSyncing={isSyncing}
+                syncPhase={syncPhase}
                 onUpdateDatabase={handleUpdateDatabase}
                 appUser={currentAppUser}
                 onOpenMenu={() => setIsMobileMenuOpen(true)}
@@ -1902,6 +2049,7 @@ export default function App() {
                 hasUnsavedChanges={hasUnsavedChanges}
                 unsavedChangesCount={unsavedChangesCount}
                 isSyncing={isSyncing}
+                lastSyncDurationMs={lastSyncDurationMs}
                 onUpdateDatabase={handleUpdateDatabase}
                 onPullFromSheet={handlePullFromSheet}
                 onSwitchToWeb={() => setViewMode('web')}
@@ -1925,6 +2073,7 @@ export default function App() {
             hasUnsavedChanges={hasUnsavedChanges}
             unsavedChangesCount={unsavedChangesCount}
             isSyncing={isSyncing}
+            syncPhase={syncPhase}
             onUpdateDatabase={handleUpdateDatabase}
             appUser={currentAppUser}
             onOpenMenu={() => setIsMobileMenuOpen(true)}
@@ -1954,6 +2103,7 @@ export default function App() {
             hasUnsavedChanges={hasUnsavedChanges}
             unsavedChangesCount={unsavedChangesCount}
             isSyncing={isSyncing}
+            lastSyncDurationMs={lastSyncDurationMs}
             onUpdateDatabase={handleUpdateDatabase}
             onPullFromSheet={handlePullFromSheet}
             onSwitchToWeb={() => setViewMode('web')}

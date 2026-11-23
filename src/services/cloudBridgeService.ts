@@ -22,6 +22,9 @@ export const DEFAULT_CLOUD_BRIDGE_URL =
 export const DEFAULT_CLOUD_BRIDGE_KEY =
   ((import.meta as any).env?.VITE_CLOUD_BRIDGE_KEY as string | undefined)?.trim() || '';
 
+const GET_TIMEOUT_MS = 28000;
+const POST_TIMEOUT_MS = 45000;
+
 export interface BridgePingResult {
   ok: boolean;
   spreadsheetId: string;
@@ -37,6 +40,9 @@ export interface BridgeSaveResult {
   spreadsheetName: string;
   spreadsheetUrl: string;
   updatedAt: string;
+  syncedTabsCount?: number;
+  durationMs?: number;
+  savedTabHashes?: Record<string, string>;
 }
 
 export function extractSpreadsheetId(input?: string | null): string | null {
@@ -88,6 +94,50 @@ export function buildMultiDeviceShareUrl(
   return url.toString();
 }
 
+/**
+ * Fast deterministic FNV-1a checksum per tab so Update Database only uploads & writes modified tabs.
+ */
+function hashStringFnv1a(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36) + ':' + str.length;
+}
+
+export function computeTabsHashes(tabs: Record<string, string[][]>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [tabName, rows] of Object.entries(tabs)) {
+    result[tabName] = hashStringFnv1a(JSON.stringify(rows));
+  }
+  return result;
+}
+
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error(
+        'Koneksi ke Cloud Bridge melebihi batas waktu. Periksa internet Anda lalu coba klik Tarik Sheet / Muat Ulang.'
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchBridgeGet<T = any>(
   bridgeUrl: string,
   action: string,
@@ -112,10 +162,14 @@ async function fetchBridgeGet<T = any>(
   // Cache-buster so mobile browsers never serve stale GET results
   target.searchParams.set('_ts', String(Date.now()));
 
-  const res = await fetch(target.toString(), {
-    method: 'GET',
-    redirect: 'follow',
-  });
+  const res = await fetchWithTimeout(
+    target.toString(),
+    {
+      method: 'GET',
+      redirect: 'follow',
+    },
+    GET_TIMEOUT_MS
+  );
 
   if (!res.ok) {
     throw new Error(`Cloud Bridge merespons HTTP ${res.status}. Pastikan Web App di-deploy dengan akses "Anyone".`);
@@ -147,14 +201,18 @@ async function fetchBridgePost<T = any>(
   };
 
   // Send as text/plain to avoid CORS preflight OPTIONS on Google Apps Script Web Apps
-  const res = await fetch(cleanUrl, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: {
-      'Content-Type': 'text/plain;charset=utf-8',
+  const res = await fetchWithTimeout(
+    cleanUrl,
+    {
+      method: 'POST',
+      redirect: 'follow',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
+    POST_TIMEOUT_MS
+  );
 
   if (!res.ok) {
     throw new Error(`Cloud Bridge merespons HTTP ${res.status}.`);
@@ -197,7 +255,9 @@ export async function fetchUsersViaBridge(
   spreadsheetName?: string;
   spreadsheetUrl?: string;
   companyBranding?: BridgeCompanyBranding;
+  durationMs: number;
 }> {
+  const startedAt = performance.now();
   const data = await fetchBridgeGet<{
     ok: boolean;
     users: string[][];
@@ -215,21 +275,27 @@ export async function fetchUsersViaBridge(
     spreadsheetName: data.spreadsheetName,
     spreadsheetUrl: data.spreadsheetUrl,
     companyBranding: data.companyBranding,
+    durationMs: Math.round(performance.now() - startedAt),
   };
 }
 
 export async function pullFullDatabaseViaBridge(
   bridgeUrl: string,
   bridgeKey?: string,
-  spreadsheetId?: string | null
+  spreadsheetId?: string | null,
+  options?: { forceFresh?: boolean }
 ): Promise<
   Partial<FullSpreadsheetDatabase> & {
     spreadsheetId?: string;
     spreadsheetName?: string;
     spreadsheetUrl?: string;
     companyBranding?: BridgeCompanyBranding;
+    tabHashes?: Record<string, string>;
+    durationMs: number;
+    fromServerCache?: boolean;
   }
 > {
+  const startedAt = performance.now();
   const data = await fetchBridgeGet<{
     ok: boolean;
     tabs: Record<string, string[][]>;
@@ -237,17 +303,38 @@ export async function pullFullDatabaseViaBridge(
     spreadsheetName?: string;
     spreadsheetUrl?: string;
     companyBranding?: BridgeCompanyBranding;
+    cached?: boolean;
   }>(bridgeUrl, 'pull_db', bridgeKey, {
     ...(spreadsheetId ? { spreadsheetId } : {}),
+    ...(options?.forceFresh ? { fresh: '1' } : {}),
   });
 
   const parsed = parseDatabaseFromTabs(data.tabs || {}, true);
+  // Also compute hashes from canonical serialized payload so subsequent delta saves match cleanly
+  const canonicalTabs = serializeDatabaseToTabs({
+    assets: parsed.assets || [],
+    transactions: parsed.transactions || [],
+    maintenanceRecords: parsed.maintenanceRecords || [],
+    stockOpnameSessions: parsed.stockOpnameSessions || [],
+    disposalRecords: parsed.disposalRecords || [],
+    locations: parsed.locations || [],
+    vendors: parsed.vendors || [],
+    customDivisions: parsed.customDivisions || [],
+    customSubKelompoks: parsed.customSubKelompoks || [],
+    companySettings: parsed.companySettings as any,
+    workspaceSettings: parsed.workspaceSettings || {},
+    users: parsed.users || [],
+  });
+
   return {
     ...parsed,
     spreadsheetId: data.spreadsheetId,
     spreadsheetName: data.spreadsheetName,
     spreadsheetUrl: data.spreadsheetUrl,
     companyBranding: data.companyBranding,
+    tabHashes: computeTabsHashes(canonicalTabs),
+    durationMs: Math.round(performance.now() - startedAt),
+    fromServerCache: Boolean(data.cached),
   };
 }
 
@@ -255,18 +342,46 @@ export async function saveFullDatabaseViaBridge(
   bridgeUrl: string,
   db: FullSpreadsheetDatabase,
   bridgeKey?: string,
-  spreadsheetId?: string | null
+  spreadsheetId?: string | null,
+  previousTabHashes?: Record<string, string> | null
 ): Promise<BridgeSaveResult> {
-  const tabs = serializeDatabaseToTabs(db);
-  return fetchBridgePost<BridgeSaveResult>(
+  const startedAt = performance.now();
+  const allTabs = serializeDatabaseToTabs(db);
+  const nextHashes = computeTabsHashes(allTabs);
+
+  let tabsToSend: Record<string, string[][]> = allTabs;
+  if (previousTabHashes && Object.keys(previousTabHashes).length > 0) {
+    const delta: Record<string, string[][]> = {};
+    for (const [tabName, rows] of Object.entries(allTabs)) {
+      if (previousTabHashes[tabName] !== nextHashes[tabName]) {
+        delta[tabName] = rows;
+      }
+    }
+    if (Object.keys(delta).length > 0) {
+      tabsToSend = delta;
+    } else {
+      // Nothing structurally changed across tabs; sync only Pengaturan_Aplikasi lightly to refresh timestamp
+      tabsToSend = { Pengaturan_Aplikasi: allTabs['Pengaturan_Aplikasi'] };
+    }
+  }
+
+  const syncedTabsCount = Object.keys(tabsToSend).length;
+  const res = await fetchBridgePost<BridgeSaveResult>(
     bridgeUrl,
     {
       action: 'save_db',
       spreadsheetId: spreadsheetId || undefined,
-      tabs,
+      tabs: tabsToSend,
     },
     bridgeKey
   );
+
+  return {
+    ...res,
+    syncedTabsCount,
+    durationMs: Math.round(performance.now() - startedAt),
+    savedTabHashes: nextHashes,
+  };
 }
 
 export async function initDatabaseViaBridge(
@@ -376,7 +491,7 @@ export async function fetchPublicSheetUsersFallback(spreadsheetId: string): Prom
     cleanId
   )}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(TAB_USERS)}`;
 
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url, { method: 'GET' }, GET_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`Gagal membaca Spreadsheet publik (${res.status}). Pastikan akses Spreadsheet atau Web App Bridge aktif.`);
   }
@@ -403,9 +518,8 @@ export async function fetchPublicSheetUsersFallback(spreadsheetId: string): Prom
 }
 
 /**
- * Generates ready-to-paste Google Apps Script (Code.gs) that binds directly to the active Google Spreadsheet
- * and powers multi-device login, 11-tab database read/write, Google Drive photo storage, and Gmail alerts
- * WITHOUT requiring end users to sign in with Google.
+ * Generates ready-to-paste Google Apps Script (Code.gs v2 Turbo) with CacheService caching,
+ * single-call Sheet map lookup, Drive logo caching, and delta-only save_db support.
  */
 export function generateAppsScriptCode(accessKey: string = ''): string {
   const tabsJson = JSON.stringify(
@@ -416,19 +530,21 @@ export function generateAppsScriptCode(accessKey: string = ''): string {
   const safeKey = accessKey.replace(/"/g, '\\"').trim();
 
   return `// =====================================================================
-// AsetKantor Enterprise - Cloud Bridge untuk Google Spreadsheet & Drive
+// AsetKantor Enterprise - Cloud Bridge v2 Turbo (Cache + Delta Sync)
 // =====================================================================
-// Cara Pasang:
-// 1. Buka Google Spreadsheet Anda -> Menu "Ekstensi" -> "Apps Script".
-// 2. Hapus isi Code.gs lama, tempel seluruh skrip ini, lalu klik Simpan.
-// 3. Klik "Terapkan" (Deploy) -> "Deployment baru" -> Jenis: "Aplikasi web".
-// 4. Jalankan sebagai: "Saya" (Pemilik Sheet) | Yang memiliki akses: "Siapa saja" (Anyone).
-// 5. Salin URL Web App (/exec) lalu tempel ke aplikasi AsetKantor.
+// Fitur Kecepatan Tinggi:
+// - CacheService Server-Side untuk pull_db (<500ms di semua device/GitHub)
+// - Cache Logo Drive 6 jam (tidak baca DriveApp berulang kali)
+// - Single-call getSheets() Map (hilangkan 20+ RPC lambat ke Spreadsheet)
+// - Delta Save: save_db hanya menulis tab yang berubah saja
 // =====================================================================
 
-var ACCESS_KEY = "${safeKey}"; // Opsional: isi kunci rahasia jika ingin membatasi akses Bridge
+var ACCESS_KEY = "${safeKey}"; // Opsional: kunci rahasia Bridge
 var ROOT_DRIVE_FOLDER = "${ROOT_DRIVE_FOLDER_NAME}";
-var DEFAULT_SPREADSHEET_ID = ""; // Kosongkan jika script dibuat langsung dari dalam Spreadsheet
+var DEFAULT_SPREADSHEET_ID = ""; // Kosongkan jika script dibuat dari dalam Spreadsheet
+var DB_CACHE_TTL_SEC = 300; // 5 menit cache server (otomatis di-reset setiap save_db)
+var LOGO_CACHE_TTL_SEC = 21600; // 6 jam cache logo Drive
+var CACHE_CHUNK_LEN = 90000;
 
 var TAB_SCHEMAS = ${tabsJson};
 
@@ -455,12 +571,28 @@ function getSpreadsheet_(requestedId) {
   return ss;
 }
 
-function ensureTabs_(ss) {
+function getSheetMap_(ss) {
+  var map = {};
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    map[sheets[i].getName()] = sheets[i];
+  }
+  return map;
+}
+
+function ensureTabsFast_(ss, sheetMap, forceCheck) {
+  var cache = CacheService.getScriptCache();
+  var cacheKey = "tabs_ready_v2_" + ss.getId();
+  if (!forceCheck && cache.get(cacheKey) === "1") {
+    return sheetMap || getSheetMap_(ss);
+  }
+  var map = sheetMap || getSheetMap_(ss);
   for (var i = 0; i < TAB_SCHEMAS.length; i++) {
     var cfg = TAB_SCHEMAS[i];
-    var sheet = ss.getSheetByName(cfg.title);
+    var sheet = map[cfg.title];
     if (!sheet) {
       sheet = ss.insertSheet(cfg.title);
+      map[cfg.title] = sheet;
     }
     if (sheet.getLastRow() === 0) {
       var headerRange = sheet.getRange(1, 1, 1, cfg.headers.length);
@@ -470,9 +602,12 @@ function ensureTabs_(ss) {
       sheet.setFrozenRows(1);
     }
   }
+  cache.put(cacheKey, "1", 21600);
+  return map;
 }
 
 function readSheetValues_(sheet) {
+  if (!sheet) return [];
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
   if (lastRow === 0 || lastCol === 0) return [];
@@ -485,20 +620,29 @@ function resolveDriveImageDataUrl_(url) {
   if (str.indexOf("data:image/") === 0) return str;
   var match = str.match(/(?:\\/file\\/d\\/|[?&]id=|\\/d\\/)([a-zA-Z0-9_-]{10,})/);
   if (!match || !match[1]) return "";
+  var fileId = match[1];
+  var cache = CacheService.getScriptCache();
+  var logoKey = "logo_v2_" + fileId;
+  var cachedLogo = cache.get(logoKey);
+  if (cachedLogo) return cachedLogo;
   try {
-    var file = DriveApp.getFileById(match[1]);
+    var file = DriveApp.getFileById(fileId);
     var blob = file.getBlob();
     var bytes = blob.getBytes();
     if (bytes.length > 350000) return "";
     var mime = blob.getContentType() || "image/png";
-    return "data:" + mime + ";base64," + Utilities.base64Encode(bytes);
+    var dataUrl = "data:" + mime + ";base64," + Utilities.base64Encode(bytes);
+    if (dataUrl.length <= 95000) {
+      cache.put(logoKey, dataUrl, LOGO_CACHE_TTL_SEC);
+    }
+    return dataUrl;
   } catch (err) {
     return "";
   }
 }
 
-function readCompanyBranding_(ss) {
-  var sh = ss.getSheetByName("Pengaturan_Aplikasi");
+function readCompanyBrandingFromMap_(sheetMap) {
+  var sh = sheetMap["Pengaturan_Aplikasi"];
   if (!sh) return {};
   var rows = readSheetValues_(sh);
   var map = {};
@@ -513,6 +657,57 @@ function readCompanyBranding_(ss) {
     logoUrl: rawLogo,
     logoDataUrl: resolveDriveImageDataUrl_(rawLogo)
   };
+}
+
+function readCachedPullJson_(ssId) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var metaStr = cache.get("db_meta_v2_" + ssId);
+    if (!metaStr) return null;
+    var count = Number(metaStr);
+    if (!count || count < 1) return null;
+    var keys = [];
+    for (var i = 0; i < count; i++) {
+      keys.push("db_part_v2_" + ssId + "_" + i);
+    }
+    var parts = cache.getAll(keys);
+    var joined = "";
+    for (var j = 0; j < count; j++) {
+      var chunk = parts[keys[j]];
+      if (chunk === undefined || chunk === null) return null;
+      joined += chunk;
+    }
+    return joined;
+  } catch (err) {
+    return null;
+  }
+}
+
+function writeCachedPullJson_(ssId, jsonStr) {
+  try {
+    if (!jsonStr || jsonStr.length > 1800000) return;
+    var cache = CacheService.getScriptCache();
+    var count = Math.ceil(jsonStr.length / CACHE_CHUNK_LEN);
+    var entries = {};
+    for (var i = 0; i < count; i++) {
+      entries["db_part_v2_" + ssId + "_" + i] = jsonStr.substr(i * CACHE_CHUNK_LEN, CACHE_CHUNK_LEN);
+    }
+    entries["db_meta_v2_" + ssId] = String(count);
+    cache.putAll(entries, DB_CACHE_TTL_SEC);
+  } catch (err) {}
+}
+
+function invalidateDbCache_(ssId) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var metaStr = cache.get("db_meta_v2_" + ssId);
+    var toRemove = ["db_meta_v2_" + ssId];
+    var count = Number(metaStr) || 0;
+    for (var i = 0; i < count; i++) {
+      toRemove.push("db_part_v2_" + ssId + "_" + i);
+    }
+    cache.removeAll(toRemove);
+  } catch (err) {}
 }
 
 function getOrCreateFolderPath_(segments) {
@@ -549,55 +744,75 @@ function doGet(e) {
     checkAccessKey_(params.key);
     var action = String(params.action || "ping");
     var ss = getSpreadsheet_(params.spreadsheetId);
+    var ssId = ss.getId();
+
+    if (action === "pull_db" && String(params.fresh || "") !== "1") {
+      var cachedJson = readCachedPullJson_(ssId);
+      if (cachedJson) {
+        return ContentService
+          .createTextOutput(cachedJson)
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    var sheetMap = ensureTabsFast_(ss, getSheetMap_(ss), false);
 
     if (action === "ping") {
-      ensureTabs_(ss);
-      var usersSheet = ss.getSheetByName("${TAB_USERS}");
-      var assetsSheet = ss.getSheetByName("Daftar_Aset");
+      var usersSheet = sheetMap["${TAB_USERS}"];
+      var assetsSheet = sheetMap["Daftar_Aset"];
       var usersCount = usersSheet ? Math.max(0, usersSheet.getLastRow() - 1) : 0;
       var assetCount = assetsSheet ? Math.max(0, assetsSheet.getLastRow() - 1) : 0;
       return jsonResponse_({
         ok: true,
-        spreadsheetId: ss.getId(),
+        spreadsheetId: ssId,
         spreadsheetName: ss.getName(),
         spreadsheetUrl: ss.getUrl(),
         usersCount: usersCount,
         assetCount: assetCount,
-        companyBranding: readCompanyBranding_(ss)
+        companyBranding: readCompanyBrandingFromMap_(sheetMap)
       });
     }
 
     if (action === "get_users") {
-      ensureTabs_(ss);
-      var sheet = ss.getSheetByName("${TAB_USERS}");
-      var allRows = sheet ? readSheetValues_(sheet) : [];
+      var sheet = sheetMap["${TAB_USERS}"];
+      var allRows = readSheetValues_(sheet);
       var dataRows = allRows.length > 1 ? allRows.slice(1) : [];
       return jsonResponse_({
         ok: true,
-        spreadsheetId: ss.getId(),
+        spreadsheetId: ssId,
         spreadsheetName: ss.getName(),
         spreadsheetUrl: ss.getUrl(),
         users: dataRows,
-        companyBranding: readCompanyBranding_(ss)
+        companyBranding: readCompanyBrandingFromMap_(sheetMap)
       });
     }
 
     if (action === "pull_db") {
-      ensureTabs_(ss);
       var tabs = {};
       for (var i = 0; i < TAB_SCHEMAS.length; i++) {
         var title = TAB_SCHEMAS[i].title;
-        var sh = ss.getSheetByName(title);
+        var sh = sheetMap[title];
         tabs[title] = sh ? readSheetValues_(sh) : [TAB_SCHEMAS[i].headers];
       }
-      return jsonResponse_({
+      var freshPayload = {
         ok: true,
-        spreadsheetId: ss.getId(),
+        spreadsheetId: ssId,
         spreadsheetName: ss.getName(),
         spreadsheetUrl: ss.getUrl(),
         tabs: tabs,
-        companyBranding: readCompanyBranding_(ss)
-      });
+        companyBranding: readCompanyBrandingFromMap_(sheetMap)
+      };
+      var cachedVersionPayload = {
+        ok: true,
+        cached: true,
+        spreadsheetId: freshPayload.spreadsheetId,
+        spreadsheetName: freshPayload.spreadsheetName,
+        spreadsheetUrl: freshPayload.spreadsheetUrl,
+        tabs: freshPayload.tabs,
+        companyBranding: freshPayload.companyBranding
+      };
+      writeCachedPullJson_(ssId, JSON.stringify(cachedVersionPayload));
+      return jsonResponse_(freshPayload);
     }
 
     return jsonResponse_({ ok: false, error: "Action GET tidak dikenal: " + action });
@@ -616,7 +831,8 @@ function doPost(e) {
 
     if (action === "init_db") {
       var ssInit = getSpreadsheet_(body.spreadsheetId);
-      ensureTabs_(ssInit);
+      ensureTabsFast_(ssInit, getSheetMap_(ssInit), true);
+      invalidateDbCache_(ssInit.getId());
       return jsonResponse_({
         ok: true,
         spreadsheetId: ssInit.getId(),
@@ -630,18 +846,24 @@ function doPost(e) {
       lock.waitLock(25000);
       try {
         var ssSave = getSpreadsheet_(body.spreadsheetId);
-        ensureTabs_(ssSave);
+        var ssIdSave = ssSave.getId();
+        var sheetMapSave = ensureTabsFast_(ssSave, getSheetMap_(ssSave), false);
         var tabs = body.tabs || {};
+        var tabKeys = Object.keys(tabs);
 
-        for (var i = 0; i < TAB_SCHEMAS.length; i++) {
-          var title = TAB_SCHEMAS[i].title;
+        for (var i = 0; i < tabKeys.length; i++) {
+          var title = tabKeys[i];
           var rows = tabs[title];
           if (!rows || !rows.length) continue;
 
-          var sheet = ssSave.getSheetByName(title);
-          if (!sheet) sheet = ssSave.insertSheet(title);
-          sheet.clearContents();
+          var sheet = sheetMapSave[title];
+          if (!sheet) {
+            sheet = ssSave.insertSheet(title);
+            sheetMapSave[title] = sheet;
+          }
 
+          var oldLastRow = sheet.getLastRow();
+          var oldLastCol = sheet.getLastColumn();
           var numRows = rows.length;
           var numCols = rows[0].length;
           if (numRows > 0 && numCols > 0) {
@@ -653,17 +875,26 @@ function doPost(e) {
               return out;
             });
             var range = sheet.getRange(1, 1, numRows, numCols);
-            range.setNumberFormat("@");
-            range.setValues(normalized);
-            sheet.getRange(1, 1, 1, numCols).setFontWeight("bold");
-            sheet.setFrozenRows(1);
+            if (oldLastRow === 0) {
+              range.setNumberFormat("@");
+              range.setValues(normalized);
+              sheet.getRange(1, 1, 1, numCols).setFontWeight("bold");
+              sheet.setFrozenRows(1);
+            } else {
+              range.setNumberFormat("@");
+              range.setValues(normalized);
+              if (oldLastRow > numRows) {
+                sheet.getRange(numRows + 1, 1, oldLastRow - numRows, Math.max(oldLastCol, numCols)).clearContent();
+              }
+            }
           }
         }
 
         SpreadsheetApp.flush();
+        invalidateDbCache_(ssIdSave);
         return jsonResponse_({
           ok: true,
-          spreadsheetId: ssSave.getId(),
+          spreadsheetId: ssIdSave,
           spreadsheetName: ssSave.getName(),
           spreadsheetUrl: ssSave.getUrl(),
           updatedAt: new Date().toISOString()

@@ -52,6 +52,8 @@ interface NavbarProps {
   spreadsheetUrl: string | null;
   companySettings?: MasterCompanySettings;
   logoFallbackUrl?: string;
+  syncPhase?: string;
+  lastSyncDurationMs?: number | null;
 }
 
 const ROLE_SHORT: Record<AppUserAccount['role'], string> = {
@@ -79,6 +81,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onPullFromSheet,
   companySettings,
   logoFallbackUrl,
+  syncPhase,
+  lastSyncDurationMs,
 }) => {
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
 
@@ -292,17 +296,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={canMutateAssets ? onUpdateDatabase : onPullFromSheet}
                 disabled={isSyncing}
                 title={
-                  canMutateAssets
+                  isSyncing && syncPhase
+                    ? syncPhase
+                    : lastSyncDurationMs
+                    ? `Sinkron terakhir ${(lastSyncDurationMs / 1000).toFixed(1)} detik`
+                    : canMutateAssets
                     ? 'Update / Sinkronkan Database Spreadsheet'
                     : 'Muat Ulang Data dari Spreadsheet'
                 }
-                className={`p-2 rounded-lg border transition cursor-pointer shrink-0 ${
-                  hasUnsavedChanges
+                className={`px-2.5 py-1.5 rounded-lg border transition cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold ${
+                  isSyncing
+                    ? 'bg-blue-950/60 border-blue-500/50 text-blue-300'
+                    : hasUnsavedChanges
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 hover:bg-amber-500/30'
                     : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-emerald-400 hover:text-emerald-300'
                 }`}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-blue-400' : ''}`} />
+                {isSyncing && <span className="hidden xl:inline">{syncPhase || 'Sinkron...'}</span>}
               </button>
             ) : (
               <button
@@ -350,6 +361,11 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
       </div>
+      {isSyncing && (
+        <div className="h-0.5 w-full bg-slate-800 overflow-hidden">
+          <div className="h-full w-2/3 bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400 animate-pulse" />
+        </div>
+      )}
     </header>
   );
 };

@@ -57,6 +57,7 @@ interface MobileTopBarProps {
   hasUnsavedChanges?: boolean;
   unsavedChangesCount?: number;
   isSyncing?: boolean;
+  syncPhase?: string;
   onUpdateDatabase?: () => void;
   appUser?: AppUserAccount | null;
   onOpenMenu: () => void;
@@ -71,6 +72,7 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
   hasUnsavedChanges = false,
   unsavedChangesCount = 0,
   isSyncing = false,
+  syncPhase,
   onUpdateDatabase,
   appUser,
   onOpenMenu,
@@ -83,7 +85,8 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
   }, [companySettings?.logoUrl, logoFallbackUrl]);
 
   return (
-    <header className="sticky top-0 z-30 h-13 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white px-3 flex items-center justify-between gap-2 pt-safe no-print">
+    <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white pt-safe no-print">
+      <div className="h-13 px-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-2.5 min-w-0">
         {(companySettings?.logoUrl || logoFallbackUrl) && !logoLoadFailed ? (
           <img
@@ -155,6 +158,20 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
           {appUser ? appUser.fullName.charAt(0).toUpperCase() : <Menu className="w-4 h-4" />}
         </button>
       </div>
+      </div>
+      {isSyncing && (
+        <div className="px-3 pb-1.5 space-y-1">
+          <div className="flex items-center justify-between text-[10px] text-cyan-300 font-medium">
+            <span className="inline-flex items-center gap-1.5">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              <span>{syncPhase || 'Menyinkronkan database...'}</span>
+            </span>
+          </div>
+          <div className="h-0.5 w-full bg-slate-800 rounded-full overflow-hidden">
+            <div className="h-full w-2/3 bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400 animate-pulse" />
+          </div>
+        </div>
+      )}
     </header>
   );
 };
@@ -260,6 +277,7 @@ interface MobileMenuSheetProps {
   hasUnsavedChanges?: boolean;
   unsavedChangesCount?: number;
   isSyncing: boolean;
+  lastSyncDurationMs?: number | null;
   onUpdateDatabase: () => void;
   onPullFromSheet: () => void;
   onSwitchToWeb?: () => void;
@@ -281,6 +299,7 @@ export const MobileMenuSheet: React.FC<MobileMenuSheetProps> = ({
   hasUnsavedChanges = false,
   unsavedChangesCount = 0,
   isSyncing,
+  lastSyncDurationMs = null,
   onUpdateDatabase,
   onPullFromSheet,
   onSwitchToWeb,
@@ -387,7 +406,9 @@ export const MobileMenuSheet: React.FC<MobileMenuSheetProps> = ({
                   {hasUnsavedChanges
                     ? `${unsavedChangesCount} Perubahan Belum Di-Update`
                     : isBridgeConnected
-                    ? 'Database Spreadsheet Sinkron'
+                    ? `Database Spreadsheet Sinkron${
+                        lastSyncDurationMs ? ` (${(lastSyncDurationMs / 1000).toFixed(1)} dtk)` : ''
+                      }`
                     : 'Cloud Bridge Belum Terhubung'}
                 </span>
               </div>

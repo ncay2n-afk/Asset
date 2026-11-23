@@ -47,6 +47,17 @@ export const KODE_SUB_KELOMPOK_LIST: CodeItem[] = [
   { code: '099', name: 'Peralatan Kantor Lainnya' },
 ];
 
+export function dedupeCodeItems(items: CodeItem[]): CodeItem[] {
+  const map = new Map<string, CodeItem>();
+  for (const item of items) {
+    const code = String(item?.code ?? '').trim();
+    const name = String(item?.name ?? '').trim();
+    if (!code || !name) continue;
+    map.set(code, { code, name });
+  }
+  return Array.from(map.values());
+}
+
 /**
  * Format pembuatan kode barang:
  * [XX].[XX].[XXX].[XXX].[XX]

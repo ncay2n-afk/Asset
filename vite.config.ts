@@ -15,6 +15,25 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(rootDir, '.'),
       },
     },
+    build: {
+      target: 'es2020',
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) {
+              return 'react-vendor';
+            }
+            if (id.includes('node_modules/lucide-react')) {
+              return 'ui-icons';
+            }
+            if (id.includes('node_modules/qrcode') || id.includes('node_modules/jsqr')) {
+              return 'qr-tools';
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       port: 3000,
       host: '0.0.0.0',

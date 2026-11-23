@@ -43,6 +43,7 @@ interface AssetListProps {
   selectedStatusFilter: string | null;
   onClearStatusFilter: () => void;
   isMobileLayout?: boolean;
+  isLoadingInitial?: boolean;
 }
 
 const CATEGORIES: AssetCategory[] = [
@@ -65,6 +66,7 @@ export const AssetList: React.FC<AssetListProps> = ({
   selectedStatusFilter,
   onClearStatusFilter,
   isMobileLayout = false,
+  isLoadingInitial = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -327,8 +329,51 @@ export const AssetList: React.FC<AssetListProps> = ({
         </div>
       )}
 
-      {/* Main Content: Table or Cards View */}
-      {filteredAssets.length === 0 ? (
+      {/* Main Content: Skeletons during initial pull, or Table / Cards View */}
+      {isLoadingInitial && assets.length === 0 ? (
+        isMobileLayout ? (
+          <div className="grid grid-cols-1 gap-3">
+            {[0, 1, 2].map((idx) => (
+              <div
+                key={idx}
+                className="bg-white rounded-2xl border border-slate-200 overflow-hidden animate-pulse"
+              >
+                <div className="h-32 bg-slate-200" />
+                <div className="p-3.5 space-y-2.5">
+                  <div className="h-4 w-3/4 bg-slate-200 rounded" />
+                  <div className="h-3 w-1/2 bg-slate-100 rounded" />
+                  <div className="flex gap-2 pt-1">
+                    <div className="h-8 flex-1 bg-slate-100 rounded-lg" />
+                    <div className="h-8 flex-1 bg-slate-200 rounded-lg" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 text-xs font-semibold text-slate-600">
+              Mengunduh daftar inventaris aset dari Google Spreadsheet...
+            </div>
+            <div className="divide-y divide-slate-100">
+              {[0, 1, 2, 3, 4].map((idx) => (
+                <div key={idx} className="p-4 flex items-center justify-between gap-4 animate-pulse">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-10 h-10 rounded-lg bg-slate-200 shrink-0" />
+                    <div className="space-y-1.5 flex-1 max-w-xs">
+                      <div className="h-3.5 w-48 bg-slate-200 rounded" />
+                      <div className="h-2.5 w-32 bg-slate-100 rounded" />
+                    </div>
+                  </div>
+                  <div className="h-3.5 w-24 bg-slate-100 rounded" />
+                  <div className="h-6 w-20 bg-slate-200 rounded-full" />
+                  <div className="h-3.5 w-24 bg-slate-100 rounded" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      ) : filteredAssets.length === 0 ? (
         <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
           <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 mx-auto flex items-center justify-center mb-3">
             <Layers className="w-6 h-6" />

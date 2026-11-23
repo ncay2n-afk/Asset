@@ -43,6 +43,9 @@ interface SpreadsheetLoginViewProps {
   onOpenBridgeHelp: () => void;
   hasQrParam?: boolean;
   onOpenQrResult?: () => void;
+  isPrefetchingDb?: boolean;
+  prefetchReady?: boolean;
+  lastSyncDurationMs?: number | null;
 }
 
 const ROLE_LABELS: Record<AppUserAccount['role'], string> = {
@@ -66,6 +69,9 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
   onOpenBridgeHelp,
   hasQrParam = false,
   onOpenQrResult,
+  isPrefetchingDb = false,
+  prefetchReady = false,
+  lastSyncDurationMs = null,
 }) => {
   // Login credentials state
   const [identifier, setIdentifier] = useState('');
@@ -306,6 +312,20 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
             <p className="text-xs text-slate-500 mt-0.5">
               Login dari Spreadsheet Aktif (<code>Master_Pengguna</code>) &bull; Tanpa Login Google
             </p>
+            {(isSyncingUsers || isPrefetchingDb) ? (
+              <p className="inline-flex items-center gap-1.5 mt-1.5 px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-[11px] font-medium text-blue-700">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>{isSyncingUsers ? 'Memuat daftar akun & branding...' : 'Menyiapkan cache database agar login instan...'}</span>
+              </p>
+            ) : prefetchReady ? (
+              <p className="inline-flex items-center gap-1.5 mt-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[11px] font-medium text-emerald-700">
+                <CheckCircle2 className="w-3 h-3" />
+                <span>
+                  Database siap instan
+                  {lastSyncDurationMs ? ` (${(lastSyncDurationMs / 1000).toFixed(1)} dtk)` : ''}
+                </span>
+              </p>
+            ) : null}
           </div>
         </div>
 
@@ -331,6 +351,11 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
 
         {/* Main Card */}
         <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden">
+          {(isSyncingUsers || isPrefetchingDb) && (
+            <div className="h-1 w-full bg-slate-100 overflow-hidden">
+              <div className="h-full w-2/3 bg-gradient-to-r from-blue-600 via-cyan-500 to-emerald-500 animate-pulse rounded-full" />
+            </div>
+          )}
           <div className="p-6 space-y-5">
             {errorMsg && (
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
