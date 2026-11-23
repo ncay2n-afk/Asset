@@ -201,17 +201,12 @@ export interface MasterCompanySettings {
   assetCodeSeparator: '.' | '-';
 }
 
-export interface GoogleUserProfile {
-  uid: string;
-  email: string | null;
-  displayName: string | null;
-  photoURL: string | null;
-}
-
 export interface WorkspaceConfig {
   spreadsheetId: string | null;
   spreadsheetName: string;
   spreadsheetUrl: string | null;
+  cloudBridgeUrl?: string;
+  cloudBridgeKey?: string;
   driveFolderId: string | null;
   driveFolderName: string;
   notificationEmail: string;
@@ -221,7 +216,6 @@ export interface WorkspaceConfig {
   lowStockThreshold: number;
   autoSyncSpreadsheet?: boolean;
   lastSyncedAt?: string;
-  oauthClientId?: string;
 }
 
 // ==========================================

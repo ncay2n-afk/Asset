@@ -16,9 +16,10 @@ import {
   Upload,
   Settings,
   ChevronDown,
-  SlidersHorizontal
+  SlidersHorizontal,
+  UploadCloud
 } from 'lucide-react';
-import { MasterCompanySettings, AppUserAccount, GoogleUserProfile } from '../types';
+import { MasterCompanySettings, AppUserAccount } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 export type AppTab =
@@ -39,14 +40,14 @@ interface NavbarProps {
   onOpenScanModal: () => void;
   onOpenBatchLabelModal: () => void;
   onOpenBatchImportModal: () => void;
-  user: GoogleUserProfile | null;
-  hasToken: boolean;
-  onSignIn: () => void;
-  onSignOut: () => void;
   appUser?: AppUserAccount | null;
   onAppLogout?: () => void;
+  isBridgeConnected: boolean;
+  hasUnsavedChanges?: boolean;
+  unsavedChangesCount?: number;
   isSyncing: boolean;
-  onManualSync: () => void;
+  onUpdateDatabase: () => void;
+  onPullFromSheet: () => void;
   spreadsheetUrl: string | null;
   companySettings?: MasterCompanySettings;
 }
@@ -66,14 +67,14 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenScanModal,
   onOpenBatchLabelModal,
   onOpenBatchImportModal,
-  user,
-  hasToken,
-  onSignIn,
-  onSignOut,
   appUser,
   onAppLogout,
+  isBridgeConnected,
+  hasUnsavedChanges = false,
+  unsavedChangesCount = 0,
   isSyncing,
-  onManualSync,
+  onUpdateDatabase,
+  onPullFromSheet,
   companySettings,
 }) => {
   const [isToolsDropdownOpen, setIsToolsDropdownOpen] = useState(false);
@@ -104,7 +105,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     ...(canManageMaster
       ? [{ tab: 'settings' as AppTab, label: 'Master', icon: <Settings className="w-3.5 h-3.5" /> }]
       : []),
-    { tab: 'workspace', label: 'Workspace', icon: <FileSpreadsheet className="w-3.5 h-3.5" /> },
+    { tab: 'workspace', label: 'Database', icon: <FileSpreadsheet className="w-3.5 h-3.5" /> },
   ];
 
   const displayCompanyName = companySettings?.companyName
@@ -114,7 +115,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="sticky top-0 z-40 bg-slate-900 border-b border-slate-800 text-white no-print">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16 gap-6">
+        <div className="flex items-center justify-between h-16 gap-4">
           {/* Zone 1: Brand Wordmark */}
           <button
             type="button"
@@ -132,7 +133,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Boxes className="w-4 h-4 text-white" />
               </div>
             )}
-            <span className="font-bold text-base text-white tracking-tight truncate max-w-[160px]">
+            <span className="font-bold text-base text-white tracking-tight truncate max-w-[150px]">
               {displayCompanyName}
             </span>
           </button>
@@ -146,7 +147,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   key={item.tab}
                   type="button"
                   onClick={() => setCurrentTab(item.tab)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition whitespace-nowrap shrink-0 cursor-pointer ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition whitespace-nowrap shrink-0 cursor-pointer ${
                     isActive
                       ? 'bg-blue-600 text-white font-semibold'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800'
@@ -159,9 +160,23 @@ export const Navbar: React.FC<NavbarProps> = ({
             })}
           </nav>
 
-          {/* Zone 3: Primary CTA, Tools Dropdown & Profile */}
+          {/* Zone 3: Update Database CTA, Primary CTA, Tools Dropdown & Profile */}
           <div className="flex items-center gap-2 shrink-0">
             <PWAInstallButton variant="compact" />
+
+            {/* Prominent Update Database Button when there are unsaved changes */}
+            {hasUnsavedChanges && canMutateAssets && (
+              <button
+                type="button"
+                onClick={onUpdateDatabase}
+                disabled={isSyncing}
+                title="Ada perubahan lokal — klik untuk memperbarui database Spreadsheet"
+                className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap shrink-0 shadow-sm animate-pulse"
+              >
+                <UploadCloud className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>Update Database ({unsavedChangesCount})</span>
+              </button>
+            )}
 
             <div className="relative" ref={dropdownRef}>
               <button
@@ -258,28 +273,36 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {hasToken ? (
+            {isBridgeConnected ? (
               <button
                 type="button"
-                onClick={onManualSync}
+                onClick={canMutateAssets ? onUpdateDatabase : onPullFromSheet}
                 disabled={isSyncing}
-                title="Sinkronkan dengan Google Sheets"
-                className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-400 hover:text-emerald-300 transition cursor-pointer shrink-0"
+                title={
+                  canMutateAssets
+                    ? 'Update / Sinkronkan Database Spreadsheet'
+                    : 'Muat Ulang Data dari Spreadsheet'
+                }
+                className={`p-2 rounded-lg border transition cursor-pointer shrink-0 ${
+                  hasUnsavedChanges
+                    ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 hover:bg-amber-500/30'
+                    : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-emerald-400 hover:text-emerald-300'
+                }`}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-blue-400' : ''}`} />
               </button>
             ) : (
               <button
                 type="button"
-                onClick={onSignIn}
-                title="Hubungkan Google Spreadsheet"
-                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0"
+                onClick={() => setCurrentTab('workspace')}
+                title="Hubungkan Cloud Bridge Spreadsheet"
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0"
               >
-                Hubungkan Google
+                Hubungkan Sheet
               </button>
             )}
 
-            {appUser ? (
+            {appUser && (
               <div className="flex items-center gap-1.5 pl-1.5 border-l border-slate-800 shrink-0">
                 <button
                   type="button"
@@ -310,28 +333,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </button>
                 )}
               </div>
-            ) : user && hasToken ? (
-              <div className="flex items-center gap-1.5 pl-1.5 border-l border-slate-800 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setCurrentTab('workspace')}
-                  className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-2 py-1 transition cursor-pointer whitespace-nowrap"
-                  title="Google Workspace"
-                >
-                  <span className="text-xs font-medium text-slate-200 max-w-[90px] truncate">
-                    {user.displayName || 'Akun'}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  title="Putus Sesi Google"
-                  className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ) : null}
+            )}
           </div>
         </div>
       </div>

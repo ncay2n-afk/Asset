@@ -19,10 +19,13 @@ import {
   X,
   Monitor,
   ChevronRight,
-  CheckCircle2
+  CheckCircle2,
+  UploadCloud,
+  Download,
+  AlertTriangle
 } from 'lucide-react';
 import { AppTab } from './Navbar';
-import { MasterCompanySettings, AppUserAccount, GoogleUserProfile } from '../types';
+import { MasterCompanySettings, AppUserAccount } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 const ROLE_SHORT: Record<AppUserAccount['role'], string> = {
@@ -40,7 +43,7 @@ const TAB_TITLES: Record<AppTab, string> = {
   disposal: 'Penghapusan (BAPA)',
   reports: 'Laporan & Analitik',
   settings: 'Master & Pengaturan',
-  workspace: 'Google Workspace',
+  workspace: 'Database Spreadsheet',
 };
 
 interface MobileTopBarProps {
@@ -48,9 +51,11 @@ interface MobileTopBarProps {
   companySettings?: MasterCompanySettings;
   onOpenAddAssetModal: () => void;
   onOpenScanModal: () => void;
-  user: GoogleUserProfile | null;
-  hasToken: boolean;
-  onSignIn: () => void;
+  isBridgeConnected: boolean;
+  hasUnsavedChanges?: boolean;
+  unsavedChangesCount?: number;
+  isSyncing?: boolean;
+  onUpdateDatabase?: () => void;
   appUser?: AppUserAccount | null;
   onOpenMenu: () => void;
 }
@@ -60,9 +65,10 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
   companySettings,
   onOpenAddAssetModal,
   onOpenScanModal,
-  user,
-  hasToken,
-  onSignIn,
+  hasUnsavedChanges = false,
+  unsavedChangesCount = 0,
+  isSyncing = false,
+  onUpdateDatabase,
   appUser,
   onOpenMenu,
 }) => {
@@ -87,12 +93,26 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
             {TAB_TITLES[currentTab]}
           </h1>
           <p className="text-[11px] text-slate-400 truncate leading-tight">
-            {appUser ? `${appUser.fullName} · ${ROLE_SHORT[appUser.role]}` : (companySettings?.companyName || 'AsetKantor')}
+            {appUser
+              ? `${appUser.fullName} · ${ROLE_SHORT[appUser.role]}`
+              : companySettings?.companyName || 'AsetKantor'}
           </p>
         </div>
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0">
+        {hasUnsavedChanges && canMutateAssets && onUpdateDatabase && (
+          <button
+            type="button"
+            onClick={onUpdateDatabase}
+            disabled={isSyncing}
+            className="min-h-[38px] px-2.5 flex items-center gap-1 rounded-xl bg-amber-500 text-slate-950 text-[11px] font-bold hover:bg-amber-400 transition cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <UploadCloud className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            <span>Update ({unsavedChangesCount})</span>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={onOpenScanModal}
@@ -113,35 +133,14 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
           </button>
         )}
 
-        {appUser ? (
-          <button
-            type="button"
-            onClick={onOpenMenu}
-            aria-label="Profil dan Menu"
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-indigo-600 border border-indigo-500 text-white text-xs font-bold cursor-pointer"
-          >
-            {appUser.fullName.charAt(0).toUpperCase()}
-          </button>
-        ) : user && hasToken ? (
-          <button
-            type="button"
-            onClick={onOpenMenu}
-            aria-label="Profil dan Menu"
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-slate-800 border border-slate-700 cursor-pointer"
-          >
-            <span className="text-xs font-bold text-white">
-              {user.displayName?.charAt(0) || 'U'}
-            </span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onSignIn}
-            className="min-h-[40px] px-2.5 flex items-center justify-center rounded-xl bg-white text-slate-900 text-xs font-semibold hover:bg-slate-100 transition cursor-pointer whitespace-nowrap shrink-0"
-          >
-            Google
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onOpenMenu}
+          aria-label="Profil dan Menu"
+          className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-indigo-600 border border-indigo-500 text-white text-xs font-bold cursor-pointer"
+        >
+          {appUser ? appUser.fullName.charAt(0).toUpperCase() : <Menu className="w-4 h-4" />}
+        </button>
       </div>
     </header>
   );
@@ -242,14 +241,14 @@ interface MobileMenuSheetProps {
   onOpenTransactionModal: () => void;
   onOpenBatchLabelModal: () => void;
   onOpenBatchImportModal: () => void;
-  user: GoogleUserProfile | null;
-  hasToken: boolean;
-  onSignIn: () => void;
-  onSignOut: () => void;
   appUser?: AppUserAccount | null;
   onAppLogout?: () => void;
+  isBridgeConnected: boolean;
+  hasUnsavedChanges?: boolean;
+  unsavedChangesCount?: number;
   isSyncing: boolean;
-  onManualSync: () => void;
+  onUpdateDatabase: () => void;
+  onPullFromSheet: () => void;
   onSwitchToWeb?: () => void;
   isPreviewFrame?: boolean;
 }
@@ -263,14 +262,14 @@ export const MobileMenuSheet: React.FC<MobileMenuSheetProps> = ({
   onOpenTransactionModal,
   onOpenBatchLabelModal,
   onOpenBatchImportModal,
-  user,
-  hasToken,
-  onSignIn,
-  onSignOut,
   appUser,
   onAppLogout,
+  isBridgeConnected,
+  hasUnsavedChanges = false,
+  unsavedChangesCount = 0,
   isSyncing,
-  onManualSync,
+  onUpdateDatabase,
+  onPullFromSheet,
   onSwitchToWeb,
   isPreviewFrame = false,
 }) => {
@@ -314,8 +313,8 @@ export const MobileMenuSheet: React.FC<MobileMenuSheetProps> = ({
       : []),
     {
       tab: 'workspace',
-      label: 'Integrasi Google Workspace',
-      desc: 'Google Sheets, Drive, & notifikasi Gmail',
+      label: 'Database Spreadsheet & Drive',
+      desc: 'Cloud Bridge 11 tab, link semua device, email',
       icon: <FileSpreadsheet className="w-4 h-4 text-emerald-600" />,
     },
   ];
@@ -339,7 +338,7 @@ export const MobileMenuSheet: React.FC<MobileMenuSheetProps> = ({
         <div className="pt-3 pb-2 px-5 border-b border-slate-100">
           <div className="w-10 h-1.5 bg-slate-300 rounded-full mx-auto mb-3" />
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-bold text-slate-900">Menu & Alat Cepat</h2>
+            <h2 className="text-base font-bold text-slate-900">Menu &amp; Alat Cepat</h2>
             <button
               type="button"
               onClick={onClose}
@@ -352,6 +351,76 @@ export const MobileMenuSheet: React.FC<MobileMenuSheetProps> = ({
         </div>
 
         <div className="p-4 space-y-5 overflow-y-auto pb-safe">
+          {/* Update Database & Sync Box */}
+          <div
+            className={`p-3.5 rounded-2xl border space-y-2.5 ${
+              hasUnsavedChanges
+                ? 'bg-amber-50 border-amber-200'
+                : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-900">
+                {hasUnsavedChanges ? (
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                ) : (
+                  <CheckCircle2
+                    className={`w-4 h-4 shrink-0 ${
+                      isBridgeConnected ? 'text-emerald-600' : 'text-slate-400'
+                    }`}
+                  />
+                )}
+                <span>
+                  {hasUnsavedChanges
+                    ? `${unsavedChangesCount} Perubahan Belum Di-Update`
+                    : isBridgeConnected
+                    ? 'Database Spreadsheet Sinkron'
+                    : 'Cloud Bridge Belum Terhubung'}
+                </span>
+              </div>
+              {isSyncing && <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {canMutateAssets && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onUpdateDatabase();
+                  }}
+                  disabled={isSyncing}
+                  className={`flex-1 min-h-[42px] px-3 rounded-xl text-xs font-bold text-white inline-flex items-center justify-center gap-1.5 cursor-pointer ${
+                    hasUnsavedChanges
+                      ? 'bg-amber-600 hover:bg-amber-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>
+                    Update Database
+                    {hasUnsavedChanges && unsavedChangesCount > 0 ? ` (${unsavedChangesCount})` : ''}
+                  </span>
+                </button>
+              )}
+
+              {isBridgeConnected && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onPullFromSheet();
+                  }}
+                  disabled={isSyncing}
+                  className="min-h-[42px] px-3 rounded-xl bg-white border border-slate-300 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Tarik Sheet</span>
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Quick Actions Grid */}
           <div>
             <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2 px-1">
@@ -480,58 +549,6 @@ export const MobileMenuSheet: React.FC<MobileMenuSheetProps> = ({
                   </button>
                 )}
               </div>
-            )}
-
-            {user && hasToken ? (
-              <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-9 h-9 rounded-full bg-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
-                    {user.displayName?.charAt(0) || 'G'}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-slate-900 truncate">
-                      {user.displayName || user.email}
-                    </p>
-                    <p className="text-[11px] text-emerald-700 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" />
-                      <span>Google Spreadsheet Aktif</span>
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={onManualSync}
-                    disabled={isSyncing}
-                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-white border border-slate-200 text-slate-700 cursor-pointer"
-                    title="Sinkronkan Sheets"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin text-blue-600' : ''}`} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClose();
-                      onSignOut();
-                    }}
-                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-white border border-slate-200 text-rose-600 cursor-pointer"
-                    title="Putus Sesi Google"
-                  >
-                    <LogOut className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onSignIn();
-                }}
-                className="w-full min-h-[48px] flex items-center justify-center gap-2 rounded-2xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 transition cursor-pointer"
-              >
-                <span>Hubungkan Akun Google Workspace</span>
-              </button>
             )}
 
             {onSwitchToWeb && (

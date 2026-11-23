@@ -10,32 +10,45 @@ import {
   ExternalLink,
   ShieldCheck,
   CheckCircle2,
-  Link2
+  Link2,
+  UploadCloud,
+  Download,
+  Loader2
 } from 'lucide-react';
 import { OfficeAsset, AssetTransaction } from '../types';
 
 interface DashboardKPIProps {
   assets: OfficeAsset[];
   transactions: AssetTransaction[];
-  hasToken: boolean;
+  isBridgeConnected: boolean;
+  hasUnsavedChanges?: boolean;
+  unsavedChangesCount?: number;
+  isSyncing?: boolean;
   spreadsheetUrl: string | null;
-  isSpreadsheetDbActive?: boolean;
+  onUpdateDatabase?: () => void;
+  onPullFromSheet?: () => void;
   onOpenWorkspace: () => void;
   onFilterStatus?: (status: string | null) => void;
   selectedStatusFilter: string | null;
   isMobileLayout?: boolean;
+  canMutateAssets?: boolean;
 }
 
 export const DashboardKPI: React.FC<DashboardKPIProps> = ({
   assets,
   transactions: _transactions,
-  hasToken,
+  isBridgeConnected,
+  hasUnsavedChanges = false,
+  unsavedChangesCount = 0,
+  isSyncing = false,
   spreadsheetUrl,
-  isSpreadsheetDbActive = false,
+  onUpdateDatabase,
+  onPullFromSheet,
   onOpenWorkspace,
   onFilterStatus,
   selectedStatusFilter,
   isMobileLayout = false,
+  canMutateAssets = true,
 }) => {
   const totalAssetsCount = assets.length;
   const totalUnits = assets.reduce((acc, curr) => acc + (curr.totalStock || 0), 0);
@@ -68,11 +81,13 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
 
   return (
     <div className={isMobileLayout ? 'space-y-3' : 'space-y-4'}>
-      {/* Workspace & Spreadsheet Database Banner */}
+      {/* Spreadsheet Database Banner */}
       <div
-        className={`bg-slate-900 border border-slate-800 rounded-2xl text-white ${
-          isMobileLayout ? 'p-3.5' : 'p-4'
-        }`}
+        className={`border rounded-2xl text-white ${
+          hasUnsavedChanges
+            ? 'bg-slate-900 border-amber-500/60'
+            : 'bg-slate-900 border-slate-800'
+        } ${isMobileLayout ? 'p-3.5' : 'p-4'}`}
       >
         <div
           className={`flex justify-between gap-3 ${
@@ -80,39 +95,77 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
           }`}
         >
           <div className="flex items-start sm:items-center gap-3">
-            <div className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-emerald-400 shrink-0">
+            <div
+              className={`p-2 rounded-xl bg-slate-800 border border-slate-700 shrink-0 ${
+                hasUnsavedChanges ? 'text-amber-400' : 'text-emerald-400'
+              }`}
+            >
               <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-semibold text-white">Database Google Spreadsheet &amp; Drive</h2>
-                <span aria-hidden="true" className="text-slate-600 text-xs">·</span>
-                {hasToken && isSpreadsheetDbActive ? (
+                <h2 className="text-sm font-semibold text-white">
+                  Database Google Spreadsheet &amp; Drive
+                </h2>
+                <span aria-hidden="true" className="text-slate-600 text-xs">
+                  ·
+                </span>
+                {hasUnsavedChanges ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>
+                      Ada {unsavedChangesCount} perubahan belum disimpan ke Spreadsheet
+                    </span>
+                  </span>
+                ) : isBridgeConnected ? (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-400">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Aktif (11 Tab &amp; Drive Tersinkron)</span>
-                  </span>
-                ) : hasToken ? (
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-300">
-                    <Link2 className="w-3.5 h-3.5" />
-                    <span>Google Terhubung — Siap Hubungkan Sheet</span>
+                    <span>Bridge Online Aktif (Semua Device Sinkron)</span>
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400">
                     <Link2 className="w-3.5 h-3.5" />
-                    <span>Offline Cache (Hubungkan Google untuk DB Cloud)</span>
+                    <span>Belum Terhubung Bridge (Atur untuk Sync Semua Device)</span>
                   </span>
                 )}
               </div>
               <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">
                 {isMobileLayout
-                  ? 'Database utama 11 tab Google Sheets & semua gambar di Google Drive.'
-                  : 'Seluruh data inventaris, mutasi, servis, stock opname, BAPA, master data, & akun tersimpan di Google Spreadsheet serta semua gambar di Google Drive.'}
+                  ? 'Database 11 tab Spreadsheet & foto Google Drive tanpa login Google.'
+                  : 'Seluruh inventaris, mutasi, servis, stock opname, BAPA, master data, & akun tersimpan di Google Spreadsheet serta semua foto di Google Drive tanpa perlu login Google.'}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {hasUnsavedChanges && canMutateAssets && onUpdateDatabase && (
+              <button
+                type="button"
+                onClick={onUpdateDatabase}
+                disabled={isSyncing}
+                className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold px-3.5 py-2 rounded-xl transition whitespace-nowrap shrink-0 cursor-pointer min-h-[40px] shadow-sm"
+              >
+                {isSyncing ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UploadCloud className="w-3.5 h-3.5" />
+                )}
+                <span>Update Database ({unsavedChangesCount})</span>
+              </button>
+            )}
+
+            {isBridgeConnected && onPullFromSheet && (
+              <button
+                type="button"
+                onClick={onPullFromSheet}
+                disabled={isSyncing}
+                className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium px-3 py-2 rounded-xl transition whitespace-nowrap shrink-0 min-h-[40px] cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5 text-blue-400" />
+                <span>Tarik Sheet</span>
+              </button>
+            )}
+
             {spreadsheetUrl && (
               <a
                 href={spreadsheetUrl}
@@ -125,12 +178,13 @@ export const DashboardKPI: React.FC<DashboardKPIProps> = ({
                 <ExternalLink className="w-3 h-3 text-slate-400" />
               </a>
             )}
+
             <button
               type="button"
               onClick={onOpenWorkspace}
               className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-3.5 py-2 rounded-xl transition whitespace-nowrap shrink-0 cursor-pointer min-h-[40px] flex-1 sm:flex-initial"
             >
-              <span>{hasToken ? 'Kelola Database Sheet' : 'Hubungkan Spreadsheet'}</span>
+              <span>{isBridgeConnected ? 'Kelola Bridge' : 'Hubungkan Bridge'}</span>
             </button>
           </div>
         </div>

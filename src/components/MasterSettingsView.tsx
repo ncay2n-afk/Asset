@@ -41,7 +41,8 @@ import {
 } from '../types';
 import { CodeItem } from '../data/assetCodeGenerator';
 import { UserManagementPanel } from './UserManagementPanel';
-import { uploadAssetFileToDrive, compressImageFileToDataUrl } from '../services/driveService';
+import { compressImageFileToDataUrl } from '../services/driveService';
+import { uploadImageViaBridge } from '../services/cloudBridgeService';
 
 interface MasterSettingsViewProps {
   locations: MasterBuildingLocation[];
@@ -88,12 +89,15 @@ interface MasterSettingsViewProps {
   onAddAppUser?: (user: AppUserAccount) => void;
   onUpdateAppUser?: (user: AppUserAccount) => void;
   onDeleteAppUser?: (userId: string) => void;
-  hasSpreadsheetToken?: boolean;
+  isBridgeConnected?: boolean;
   hasSpreadsheetId?: boolean;
+  hasUnsavedChanges?: boolean;
+  unsavedChangesCount?: number;
   isSyncingUsers?: boolean;
   onRefreshUsersFromSheet?: () => Promise<void>;
   onPushUsersToSheet?: () => void;
-  token?: string | null;
+  cloudBridgeUrl?: string;
+  cloudBridgeKey?: string;
 }
 
 export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
@@ -126,12 +130,15 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
   onAddAppUser,
   onUpdateAppUser,
   onDeleteAppUser,
-  hasSpreadsheetToken = false,
+  isBridgeConnected = false,
   hasSpreadsheetId = false,
+  hasUnsavedChanges = false,
+  unsavedChangesCount = 0,
   isSyncingUsers = false,
   onRefreshUsersFromSheet,
   onPushUsersToSheet,
-  token = null,
+  cloudBridgeUrl = '',
+  cloudBridgeKey = '',
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<
     'company' | 'users' | 'locations' | 'divisions' | 'categories' | 'vendors' | 'backup'
@@ -193,13 +200,14 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
       }
       setIsUploadingLogo(true);
       try {
-        if (token) {
-          const driveRes = await uploadAssetFileToDrive(
-            token,
+        if (cloudBridgeUrl) {
+          const driveRes = await uploadImageViaBridge(
+            cloudBridgeUrl,
             file,
             `LOGO_INSTANSI_${Date.now().toString().slice(-5)}.png`,
             ['_COMPANY_BRANDING'],
-            `Logo resmi ${companyForm.companyName}`
+            `Logo resmi ${companyForm.companyName}`,
+            cloudBridgeKey
           );
           setCompanyForm((prev) => ({ ...prev, logoUrl: driveRes.imageUrl }));
         } else {
@@ -686,7 +694,7 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
               <div className="flex flex-wrap items-center gap-2 pt-1 justify-center sm:justify-start">
                 <label className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shadow-xs transition">
                   {isUploadingLogo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                  <span>{isUploadingLogo ? 'Mengunggah ke Drive...' : token ? 'Unggah Logo ke Drive' : 'Pilih File Logo'}</span>
+                  <span>{isUploadingLogo ? 'Mengunggah ke Drive...' : cloudBridgeUrl ? 'Unggah Logo ke Drive' : 'Pilih File Logo'}</span>
                   <input
                     type="file"
                     accept="image/*"
@@ -1449,8 +1457,10 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
           onAddUser={onAddAppUser}
           onUpdateUser={onUpdateAppUser}
           onDeleteUser={onDeleteAppUser}
-          hasSpreadsheetToken={hasSpreadsheetToken}
+          isBridgeConnected={isBridgeConnected}
           hasSpreadsheetId={hasSpreadsheetId}
+          hasUnsavedChanges={hasUnsavedChanges}
+          unsavedChangesCount={unsavedChangesCount}
           isSyncingUsers={isSyncingUsers}
           onRefreshUsersFromSheet={onRefreshUsersFromSheet}
           onPushUsersToSheet={onPushUsersToSheet}

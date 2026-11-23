@@ -11,22 +11,24 @@ import {
   Loader2
 } from 'lucide-react';
 import { AssetTransaction, OfficeAsset } from '../types';
-import { sendGmailMessage } from '../services/gmailService';
+import { sendEmailViaBridge } from '../services/cloudBridgeService';
 
 interface OverdueLoansTrackerProps {
   transactions: AssetTransaction[];
   assets: OfficeAsset[];
   onQuickReturn: (trx: AssetTransaction) => void;
   onOpenBast: (trx: AssetTransaction) => void;
-  token: string | null;
+  cloudBridgeUrl?: string | null;
+  cloudBridgeKey?: string;
 }
 
 export const OverdueLoansTracker: React.FC<OverdueLoansTrackerProps> = ({
   transactions,
-  assets,
+  assets: _assets,
   onQuickReturn,
   onOpenBast,
-  token,
+  cloudBridgeUrl,
+  cloudBridgeKey,
 }) => {
   const [sendingTrxId, setSendingTrxId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ id: string; text: string } | null>(null);
@@ -70,21 +72,25 @@ export const OverdueLoansTracker: React.FC<OverdueLoansTrackerProps> = ({
   };
 
   const handleSendReminderEmail = async (trx: AssetTransaction) => {
-    if (!token) {
-      alert('Silakan login dengan akun Google terlebih dahulu.');
+    if (!cloudBridgeUrl) {
+      setStatusMessage({ id: trx.id, text: 'Hubungkan Cloud Bridge Spreadsheet terlebih dahulu untuk kirim email.' });
+      setTimeout(() => setStatusMessage(null), 4000);
       return;
     }
     if (!trx.staffEmail) {
-      alert('Email staf peminjam tidak tersedia.');
+      setStatusMessage({ id: trx.id, text: 'Email staf peminjam tidak tersedia.' });
+      setTimeout(() => setStatusMessage(null), 4000);
       return;
     }
 
     setSendingTrxId(trx.id);
     try {
-      await sendGmailMessage(token, {
-        to: trx.staffEmail,
-        subject: `[PERINGATAN PENGEMBALIAN ASET] ${trx.assetName} - Jatuh Tempo: ${trx.expectedReturnDate || 'Segera'}`,
-        htmlBody: `
+      await sendEmailViaBridge(
+        cloudBridgeUrl,
+        {
+          to: trx.staffEmail,
+          subject: `[PERINGATAN PENGEMBALIAN ASET] ${trx.assetName} - Jatuh Tempo: ${trx.expectedReturnDate || 'Segera'}`,
+          htmlBody: `
           <div style="font-family: sans-serif; padding: 20px; background-color: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px;">
             <h3 style="color: #9f1239; margin-top: 0;">Pemberitahuan Batas Waktu Peminjaman Aset Kantor</h3>
             <p style="color: #334155; font-size: 14px;">
@@ -108,12 +114,14 @@ export const OverdueLoansTracker: React.FC<OverdueLoansTrackerProps> = ({
             </p>
           </div>
         `,
-      });
+        },
+        cloudBridgeKey
+      );
 
       setStatusMessage({ id: trx.id, text: '✓ Email peringatan berhasil dikirim!' });
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
-      alert(`Gagal mengirim email: ${err.message}`);
+      setStatusMessage({ id: trx.id, text: `Gagal mengirim email: ${err.message}` });
     } finally {
       setSendingTrxId(null);
     }

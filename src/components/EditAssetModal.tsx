@@ -4,16 +4,17 @@ import { OfficeAsset, AssetCategory, AssetCondition, AssetStatus, MasterBuilding
 import { parseAssetCode } from '../data/assetCodeGenerator';
 import { CurrencyInput } from './CurrencyInput';
 import {
-  uploadConditionPhotoToDrive,
   compressImageFileToDataUrl,
   normalizeDriveImageUrl,
 } from '../services/driveService';
+import { uploadConditionPhotoViaBridge } from '../services/cloudBridgeService';
 
 interface EditAssetModalProps {
   isOpen: boolean;
   onClose: () => void;
   asset: OfficeAsset | null;
-  token: string | null;
+  cloudBridgeUrl?: string | null;
+  cloudBridgeKey?: string;
   onSaveAsset: (updatedAsset: OfficeAsset) => void;
   onDeleteAsset: (assetId: string) => void;
   registeredLocations?: MasterBuildingLocation[];
@@ -32,7 +33,8 @@ export const EditAssetModal: React.FC<EditAssetModalProps> = ({
   isOpen,
   onClose,
   asset,
-  token,
+  cloudBridgeUrl,
+  cloudBridgeKey,
   onSaveAsset,
   onDeleteAsset,
   registeredLocations = [],
@@ -78,14 +80,15 @@ export const EditAssetModal: React.FC<EditAssetModalProps> = ({
       let nextPhotoDate = asset.lastPhotoDate || '';
 
       if (photoFile) {
-        if (token) {
+        if (cloudBridgeUrl) {
           try {
-            const driveResult = await uploadConditionPhotoToDrive(
-              token,
+            const driveResult = await uploadConditionPhotoViaBridge(
+              cloudBridgeUrl,
               photoFile,
               `UPDATE_${id.trim().replace(/\./g, '_')}_${todayStr}.jpg`,
               id.trim(),
-              todayStr
+              todayStr,
+              cloudBridgeKey
             );
             nextPhotoUrl = driveResult.imageUrl;
             nextPhotoDate = todayStr;
@@ -201,9 +204,9 @@ export const EditAssetModal: React.FC<EditAssetModalProps> = ({
                 onChange={handlePhotoChange}
                 className="block w-full text-xs text-slate-500 file:mr-2.5 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
               />
-              {!token && photoFile && (
+              {!cloudBridgeUrl && photoFile && (
                 <p className="text-[10px] text-amber-700">
-                  Google Drive belum terhubung — foto dikompres sementara secara lokal.
+                  Cloud Bridge Drive belum terhubung — foto dikompres sementara secara lokal.
                 </p>
               )}
             </div>

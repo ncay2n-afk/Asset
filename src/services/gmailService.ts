@@ -1,66 +1,18 @@
 import { AssetTransaction, OfficeAsset } from '../types';
 
-function toBase64Url(str: string): string {
-  // UTF-8 encode before btoa to handle Indonesian special characters and accents
-  const utf8Bytes = new TextEncoder().encode(str);
-  let binary = '';
-  for (let i = 0; i < utf8Bytes.length; i++) {
-    binary += String.fromCharCode(utf8Bytes[i]);
-  }
-  return btoa(binary)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-}
-
 export interface SendEmailParams {
   to: string;
   subject: string;
   htmlBody: string;
 }
 
-export async function sendGmailMessage(token: string, params: SendEmailParams): Promise<boolean> {
-  const { to, subject, htmlBody } = params;
-
-  const emailLines = [
-    `To: ${to}`,
-    `Subject: =?utf-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-    '',
-    htmlBody,
-  ];
-
-  const emailContent = emailLines.join('\r\n');
-  const base64UrlContent = toBase64Url(emailContent);
-
-  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      raw: base64UrlContent,
-    }),
-  });
-
-  if (!res.ok) {
-    const errorBody = await res.text();
-    console.error('Failed to send Gmail:', res.status, errorBody);
-    throw new Error(`Gagal mengirim email via Gmail API: ${res.status} ${errorBody}`);
-  }
-
-  return true;
-}
-
 /**
- * Builds a beautiful HTML notification template for asset mutations.
+ * Builds a clean HTML notification template for asset mutations.
  */
 export function buildAssetStatusEmailTemplate(
   asset: OfficeAsset,
   trx: AssetTransaction,
-  appUrl: string = window.location.origin
+  appUrl: string = typeof window !== 'undefined' ? window.location.origin : ''
 ): { subject: string; html: string } {
   let typeLabel = '';
   let badgeColor = '#2563eb';
@@ -123,18 +75,15 @@ export function buildAssetStatusEmailTemplate(
     </head>
     <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; padding: 24px; margin: 0; color: #1e293b;">
       <table cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-        <!-- Header -->
         <tr>
           <td style="background-color: #0f172a; padding: 20px 24px;">
-            <div style="display: flex; align-items: center;">
+            <div>
               <span style="font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">AsetKantor</span>
               <span style="color: #94a3b8; font-size: 12px; margin-left: 10px; padding: 2px 8px; border-radius: 4px; background: rgba(255,255,255,0.1);">Sistem Inventaris</span>
             </div>
             <p style="color: #94a3b8; font-size: 13px; margin: 6px 0 0 0;">Laporan Perubahan Status Aset Otomatis</p>
           </td>
         </tr>
-
-        <!-- Body -->
         <tr>
           <td style="padding: 24px;">
             <div style="display: inline-block; padding: 4px 12px; background-color: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeColor}33; border-radius: 9999px; font-size: 12px; font-weight: 600; text-transform: uppercase;">
@@ -148,7 +97,6 @@ export function buildAssetStatusEmailTemplate(
               Kode Aset: <strong>${asset.id}</strong> | Kategori: <strong>${asset.category}</strong>
             </p>
 
-            <!-- Detail Grid Table -->
             <table cellpadding="6" cellspacing="0" border="0" width="100%" style="font-size: 13px; border-collapse: collapse; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 16px;">
               <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
                 <td width="35%" style="color: #64748b; font-weight: 500;">Staf / Penanggung Jawab</td>
@@ -201,11 +149,9 @@ export function buildAssetStatusEmailTemplate(
             </div>
           </td>
         </tr>
-
-        <!-- Footer -->
         <tr>
           <td style="background-color: #f8fafc; padding: 14px 24px; font-size: 11px; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0;">
-            Email ini dikirim secara otomatis oleh Sistem AsetKantor terintegrasi Google Workspace (Sheets, Drive, & Gmail).
+            Email ini dikirim otomatis oleh Sistem AsetKantor terintegrasi Google Spreadsheet &amp; Google Drive.
           </td>
         </tr>
       </table>

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Camera, Layers, CheckCircle2, AlertTriangle, Loader2, Sparkles, Hash } from 'lucide-react';
 import { OfficeAsset, AssetCategory, AssetCondition, MasterBuildingLocation } from '../types';
-import { uploadConditionPhotoToDrive, compressImageFileToDataUrl } from '../services/driveService';
+import { compressImageFileToDataUrl } from '../services/driveService';
+import { uploadConditionPhotoViaBridge } from '../services/cloudBridgeService';
 import { CurrencyInput } from './CurrencyInput';
 import {
   KODE_BIDANG_LIST,
@@ -14,7 +15,8 @@ import {
 interface AddAssetModalProps {
   isOpen: boolean;
   onClose: () => void;
-  token: string | null;
+  cloudBridgeUrl?: string | null;
+  cloudBridgeKey?: string;
   spreadsheetId: string | null;
   onAssetAdded: (newAsset: OfficeAsset) => void;
   existingCount: number;
@@ -35,8 +37,9 @@ const CATEGORIES: AssetCategory[] = [
 export const AddAssetModal: React.FC<AddAssetModalProps> = ({
   isOpen,
   onClose,
-  token,
-  spreadsheetId,
+  cloudBridgeUrl,
+  cloudBridgeKey,
+  spreadsheetId: _spreadsheetId,
   onAssetAdded,
   existingCount,
   registeredLocations = [],
@@ -134,14 +137,15 @@ export const AddAssetModal: React.FC<AddAssetModalProps> = ({
 
       let uploadedPhotoUrl = '';
 
-      if (photoFile && token) {
+      if (photoFile && cloudBridgeUrl) {
         try {
-          const driveResult = await uploadConditionPhotoToDrive(
-            token,
+          const driveResult = await uploadConditionPhotoViaBridge(
+            cloudBridgeUrl,
             photoFile,
             `INITIAL_${autoId.replace(/\./g, '_')}_${todayStr}.jpg`,
             autoId,
-            todayStr
+            todayStr,
+            cloudBridgeKey
           );
           uploadedPhotoUrl = driveResult.imageUrl;
         } catch (driveErr) {

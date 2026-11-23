@@ -15,25 +15,28 @@ import {
   Loader2,
   UserPlus,
   QrCode,
-  Link2
+  Link2,
+  Share2,
+  Check
 } from 'lucide-react';
-import { AppUserAccount, MasterCompanySettings, WorkspaceConfig, GoogleUserProfile } from '../types';
+import { AppUserAccount, MasterCompanySettings, WorkspaceConfig } from '../types';
 import { generateSaltHex, hashPassword, verifyPassword } from '../services/passwordCrypto';
+import {
+  buildMultiDeviceShareUrl,
+  isValidBridgeUrl
+} from '../services/cloudBridgeService';
 
 interface SpreadsheetLoginViewProps {
   users: AppUserAccount[];
   companySettings: MasterCompanySettings;
   workspaceConfig: WorkspaceConfig;
-  googleUser: GoogleUserProfile | null;
-  token: string | null;
   isSyncingUsers: boolean;
-  onGoogleConnectAndSync: () => Promise<void>;
   onRefreshUsersFromSheet: () => Promise<void>;
-  onUpdateSheetId: (sheetIdInput: string) => void;
+  onConnectBridge: (bridgeUrl: string, bridgeKey?: string, sheetId?: string) => Promise<void>;
   onLoginSuccess: (account: AppUserAccount) => void;
   onActivateInvitedUser: (account: AppUserAccount) => void;
   onFirstSuperAdminCreated: (account: AppUserAccount) => void;
-  onOpenAuthHelp: () => void;
+  onOpenBridgeHelp: () => void;
   hasQrParam?: boolean;
   onOpenQrResult?: () => void;
 }
@@ -49,16 +52,13 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
   users,
   companySettings,
   workspaceConfig,
-  googleUser,
-  token,
   isSyncingUsers,
-  onGoogleConnectAndSync,
   onRefreshUsersFromSheet,
-  onUpdateSheetId,
+  onConnectBridge,
   onLoginSuccess,
   onActivateInvitedUser,
   onFirstSuperAdminCreated,
-  onOpenAuthHelp,
+  onOpenBridgeHelp,
   hasQrParam = false,
   onOpenQrResult,
 }) => {
@@ -69,8 +69,8 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
 
   // First-run Super Admin setup OR Invited user password claim state
   const [setupUsername, setSetupUsername] = useState('superadmin');
-  const [setupFullName, setSetupFullName] = useState(googleUser?.displayName || 'Super Admin');
-  const [setupEmail, setSetupEmail] = useState(googleUser?.email || '');
+  const [setupFullName, setSetupFullName] = useState('Super Admin');
+  const [setupEmail, setSetupEmail] = useState('');
   const [setupDept, setSetupDept] = useState('IT & General Affairs');
   const [setupPassword, setSetupPassword] = useState('');
   const [setupConfirm, setSetupConfirm] = useState('');
@@ -78,34 +78,26 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
   // Pending claim for a user row added directly in Google Sheets with empty passwordHash
   const [pendingClaimUser, setPendingClaimUser] = useState<AppUserAccount | null>(null);
 
-  // Sheet ID helper state
-  const [showSheetLinkInput, setShowSheetLinkInput] = useState(false);
+  // Bridge & Sheet connection helper state
+  const [showConnectionPanel, setShowConnectionPanel] = useState(
+    !workspaceConfig.cloudBridgeUrl && !workspaceConfig.spreadsheetId
+  );
+  const [bridgeUrlInput, setBridgeUrlInput] = useState(workspaceConfig.cloudBridgeUrl || '');
+  const [bridgeKeyInput, setBridgeKeyInput] = useState(workspaceConfig.cloudBridgeKey || '');
   const [sheetIdInput, setSheetIdInput] = useState(workspaceConfig.spreadsheetId || '');
+  const [copiedShare, setCopiedShare] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    setBridgeUrlInput(workspaceConfig.cloudBridgeUrl || '');
+    setBridgeKeyInput(workspaceConfig.cloudBridgeKey || '');
     setSheetIdInput(workspaceConfig.spreadsheetId || '');
-  }, [workspaceConfig.spreadsheetId]);
+  }, [workspaceConfig.cloudBridgeUrl, workspaceConfig.cloudBridgeKey, workspaceConfig.spreadsheetId]);
 
-  useEffect(() => {
-    if (googleUser?.email && !setupEmail) {
-      setSetupEmail(googleUser.email);
-    }
-    if (googleUser?.displayName && setupFullName === 'Super Admin') {
-      setSetupFullName(googleUser.displayName);
-    }
-  }, [googleUser, setupEmail, setupFullName]);
-
-  const googleMatchedUser =
-    token && googleUser?.email
-      ? users.find(
-          (u) =>
-            u.isActive &&
-            u.email.trim().toLowerCase() === googleUser.email!.trim().toLowerCase()
-        )
-      : undefined;
+  const isBridgeConnected = isValidBridgeUrl(workspaceConfig.cloudBridgeUrl);
+  const hasPublicSheetOnly = !isBridgeConnected && Boolean(workspaceConfig.spreadsheetId);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -247,11 +239,29 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
     }
   };
 
-  const handleSaveSheetLink = (e: React.FormEvent) => {
+  const handleConnectSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!sheetIdInput.trim()) return;
-    onUpdateSheetId(sheetIdInput.trim());
-    setShowSheetLinkInput(false);
+    setErrorMsg(null);
+    await onConnectBridge(
+      bridgeUrlInput.trim(),
+      bridgeKeyInput.trim(),
+      sheetIdInput.trim()
+    );
+    setShowConnectionPanel(false);
+  };
+
+  const handleCopyShareUrl = async () => {
+    const shareUrl = buildMultiDeviceShareUrl(
+      workspaceConfig.cloudBridgeUrl,
+      workspaceConfig.spreadsheetId,
+      workspaceConfig.cloudBridgeKey
+    );
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedShare(true);
+      setTimeout(() => setCopiedShare(false), 2500);
+    } catch {}
   };
 
   return (
@@ -277,7 +287,7 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
               {companySettings.companyName || 'AsetKantor Enterprise'}
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Login Akun Pengguna · Database Google Spreadsheet (<code>Master_Pengguna</code>)
+              Login dari Spreadsheet Aktif (<code>Master_Pengguna</code>) &bull; Tanpa Login Google
             </p>
           </div>
         </div>
@@ -304,15 +314,25 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
 
         {/* Main Card */}
         <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden">
-          {/* Google Spreadsheet Connection Bar */}
+          {/* Online Spreadsheet Cloud Bridge Bar */}
           <div className="bg-slate-900 text-white p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400 shrink-0" />
+                <FileSpreadsheet
+                  className={`w-4 h-4 shrink-0 ${
+                    isBridgeConnected
+                      ? 'text-emerald-400'
+                      : hasPublicSheetOnly
+                      ? 'text-blue-400'
+                      : 'text-amber-400'
+                  }`}
+                />
                 <span className="text-xs font-semibold truncate">
-                  {token
-                    ? `Google Terhubung (${googleUser?.email})`
-                    : 'Sinkronisasi User Spreadsheet'}
+                  {isBridgeConnected
+                    ? `Bridge Online (${workspaceConfig.spreadsheetName || 'Spreadsheet Aktif'})`
+                    : hasPublicSheetOnly
+                    ? 'Mode Read-Only Publik Spreadsheet'
+                    : 'Spreadsheet Online Belum Terhubung'}
                 </span>
               </div>
               <span className="text-[11px] px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-slate-200 shrink-0">
@@ -320,88 +340,100 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
               </span>
             </div>
 
-            {!token ? (
-              <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={onGoogleConnectAndSync}
-                  disabled={isSyncingUsers}
-                  className="w-full min-h-[42px] bg-white hover:bg-slate-100 disabled:opacity-60 text-slate-900 rounded-xl px-4 py-2 text-xs font-semibold flex items-center justify-center gap-2.5 shadow-sm transition cursor-pointer"
+                  onClick={() => setShowConnectionPanel((v) => !v)}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] text-slate-200 inline-flex items-center gap-1 cursor-pointer"
                 >
-                  {isSyncingUsers ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                  ) : (
-                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 48 48" aria-hidden="true">
-                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-                    </svg>
-                  )}
-                  <span>Hubungkan Google &amp; Muat User Spreadsheet</span>
+                  <Link2 className="w-3 h-3 text-blue-400" />
+                  <span>{isBridgeConnected ? 'Atur Bridge' : 'Hubungkan Spreadsheet'}</span>
                 </button>
-                <div className="flex items-center justify-between text-[11px] text-slate-400">
-                  <button
-                    type="button"
-                    onClick={() => setShowSheetLinkInput((v) => !v)}
-                    className="hover:text-white inline-flex items-center gap-1 cursor-pointer"
-                  >
-                    <Link2 className="w-3 h-3" />
-                    <span>{workspaceConfig.spreadsheetId ? 'Ubah ID Spreadsheet' : 'Tempel ID Spreadsheet'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onOpenAuthHelp}
-                    className="hover:text-amber-300 inline-flex items-center gap-1 cursor-pointer"
-                  >
-                    <HelpCircle className="w-3 h-3" />
-                    <span>Kendala Login GitHub?</span>
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[11px] text-emerald-300 truncate max-w-[210px]">
-                  {workspaceConfig.spreadsheetId
-                    ? `Sheet: ${workspaceConfig.spreadsheetName}`
-                    : 'Spreadsheet belum ditautkan'}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setShowSheetLinkInput((v) => !v)}
-                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] text-slate-200 cursor-pointer"
-                  >
-                    ID Sheet
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onRefreshUsersFromSheet}
-                    disabled={isSyncingUsers}
-                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-60"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${isSyncingUsers ? 'animate-spin' : ''}`} />
-                    <span>Refresh User</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {showSheetLinkInput && (
-              <form onSubmit={handleSaveSheetLink} className="flex gap-1.5 pt-1">
-                <input
-                  type="text"
-                  placeholder="Tempel URL atau ID Google Spreadsheet..."
-                  value={sheetIdInput}
-                  onChange={(e) => setSheetIdInput(e.target.value)}
-                  className="flex-1 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-[11px] font-mono placeholder:text-slate-500"
-                />
                 <button
-                  type="submit"
-                  className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold cursor-pointer"
+                  type="button"
+                  onClick={onOpenBridgeHelp}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] text-amber-300 inline-flex items-center gap-1 cursor-pointer"
                 >
-                  Simpan
+                  <HelpCircle className="w-3 h-3" />
+                  <span>Panduan &amp; Code.gs</span>
                 </button>
+                {isBridgeConnected && (
+                  <button
+                    type="button"
+                    onClick={handleCopyShareUrl}
+                    title="Salin link agar HP / device lain langsung terhubung"
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] text-cyan-300 inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    {copiedShare ? <Check className="w-3 h-3 text-emerald-400" /> : <Share2 className="w-3 h-3" />}
+                    <span>{copiedShare ? 'Link Tersalin' : 'Share Device'}</span>
+                  </button>
+                )}
+              </div>
+
+              {(isBridgeConnected || workspaceConfig.spreadsheetId) && (
+                <button
+                  type="button"
+                  onClick={onRefreshUsersFromSheet}
+                  disabled={isSyncingUsers}
+                  className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isSyncingUsers ? 'animate-spin' : ''}`} />
+                  <span>Refresh User</span>
+                </button>
+              )}
+            </div>
+
+            {showConnectionPanel && (
+              <form
+                onSubmit={handleConnectSubmit}
+                className="space-y-2 pt-2 border-t border-slate-800 text-[11px]"
+              >
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">
+                    URL Web App Cloud Bridge (Apps Script <code>/exec</code>)
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    value={bridgeUrlInput}
+                    onChange={(e) => setBridgeUrlInput(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono placeholder:text-slate-500"
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="Kunci Bridge (opsional)"
+                    value={bridgeKeyInput}
+                    onChange={(e) => setBridgeKeyInput(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono placeholder:text-slate-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="ID/URL Sheet (opsional)"
+                    value={sheetIdInput}
+                    onChange={(e) => setSheetIdInput(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono placeholder:text-slate-500"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={onOpenBridgeHelp}
+                    className="text-amber-300 hover:underline text-[11px] cursor-pointer"
+                  >
+                    Cara buat URL Bridge gratis (2 menit) &rarr;
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSyncingUsers}
+                    className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    {isSyncingUsers && <Loader2 className="w-3 h-3 animate-spin" />}
+                    <span>Hubungkan &amp; Muat User</span>
+                  </button>
+                </div>
               </form>
             )}
           </div>
@@ -482,7 +514,7 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
                     <span>Setup Akun Super Admin Pertama</span>
                   </div>
                   <p className="text-[11px] text-amber-900 leading-relaxed">
-                    Belum ada daftar pengguna di tab <code>Master_Pengguna</code>. Jika sudah punya Spreadsheet dari perangkat lain, klik tombol <strong>Hubungkan Google</strong> di atas terlebih dahulu. Jika baru memulai, buat akun Super Admin pertama Anda di bawah ini.
+                    Belum ada daftar pengguna di tab <code>Master_Pengguna</code>. Jika perusahaan sudah memiliki Spreadsheet aktif di perangkat lain, masukkan URL Cloud Bridge di panel atas terlebih dahulu lalu klik <strong>Hubungkan &amp; Muat User</strong>. Jika baru memulai, buat akun Super Admin pertama Anda di bawah ini.
                   </p>
                 </div>
 
@@ -530,7 +562,7 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Email (Opsional — untuk login cepat via Google)
+                    Email (Opsional — untuk notifikasi &amp; login alternatif)
                   </label>
                   <input
                     type="email"
@@ -587,103 +619,72 @@ export const SpreadsheetLoginView: React.FC<SpreadsheetLoginViewProps> = ({
               </form>
             ) : (
               /* Case C: Standard Spreadsheet User Login */
-              <div className="space-y-4">
-                {googleMatchedUser && (
-                  <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2.5">
-                    <div className="flex items-start gap-2.5">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                      <div className="text-xs text-emerald-950">
-                        <p className="font-bold">
-                          Akun Google Anda Terdaftar di Spreadsheet!
-                        </p>
-                        <p className="text-[11px] text-emerald-800 mt-0.5">
-                          {googleMatchedUser.fullName} (<code>{googleMatchedUser.username}</code>) ·{' '}
-                          <strong>{ROLE_LABELS[googleMatchedUser.role]}</strong>
-                        </p>
-                      </div>
-                    </div>
+              <form onSubmit={handleLoginSubmit} className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Username atau Email (dari Spreadsheet)
+                  </label>
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      required
+                      autoComplete="username"
+                      value={identifier}
+                      onChange={(e) => setIdentifier(e.target.value)}
+                      placeholder="contoh: superadmin atau nama@kantor.com"
+                      className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Kata Sandi
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Masukkan password akun..."
+                      className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
                     <button
                       type="button"
-                      onClick={() =>
-                        onLoginSuccess({
-                          ...googleMatchedUser,
-                          lastLoginAt: new Date().toISOString(),
-                        })
-                      }
-                      className="w-full min-h-[40px] py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-label="Tampilkan atau sembunyikan password"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                     >
-                      Masuk Langsung sebagai {googleMatchedUser.fullName}
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
-                )}
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Jika akun baru ditambahkan langsung di tab <code>Master_Pengguna</code> tanpa password, kosongkan sandi lalu klik Masuk untuk membuat password baru.
+                  </p>
+                </div>
 
-                <form onSubmit={handleLoginSubmit} className="space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Username atau Email (dari Spreadsheet)
-                    </label>
-                    <div className="relative">
-                      <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        required
-                        autoComplete="username"
-                        value={identifier}
-                        onChange={(e) => setIdentifier(e.target.value)}
-                        placeholder="contoh: superadmin atau nama@kantor.com"
-                        className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Kata Sandi
-                    </label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        autoComplete="current-password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="Masukkan password akun..."
-                        className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword((v) => !v)}
-                        aria-label="Tampilkan atau sembunyikan password"
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-slate-400 mt-1">
-                      Jika akun baru ditambahkan langsung di tab <code>Master_Pengguna</code> tanpa password, kosongkan sandi lalu klik Masuk untuk membuat password baru.
-                    </p>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    className="w-full min-h-[44px] py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
-                  >
-                    {isSubmitting ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <ShieldCheck className="w-4 h-4 text-blue-400" />
-                    )}
-                    <span>Masuk dengan Akun Spreadsheet</span>
-                  </button>
-                </form>
-              </div>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full min-h-[44px] py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
+                >
+                  {isSubmitting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4 text-blue-400" />
+                  )}
+                  <span>Masuk dengan Akun Spreadsheet</span>
+                </button>
+              </form>
             )}
           </div>
         </div>
 
         <p className="text-center text-[11px] text-slate-500">
-          Daftar pengguna &amp; peran (Super Admin, Admin, Operator, Auditor) dikelola di tab{' '}
+          Daftar pengguna &amp; peran (Super Admin, Admin, Operator, Auditor) tersinkron langsung dengan tab{' '}
           <code>Master_Pengguna</code> Google Spreadsheet.
         </p>
       </div>

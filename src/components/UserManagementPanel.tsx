@@ -22,8 +22,10 @@ interface UserManagementPanelProps {
   onAddUser: (user: AppUserAccount) => void;
   onUpdateUser: (user: AppUserAccount) => void;
   onDeleteUser: (userId: string) => void;
-  hasSpreadsheetToken: boolean;
+  isBridgeConnected: boolean;
   hasSpreadsheetId: boolean;
+  hasUnsavedChanges?: boolean;
+  unsavedChangesCount?: number;
   isSyncingUsers?: boolean;
   onRefreshUsersFromSheet?: () => Promise<void>;
   onPushUsersToSheet?: () => void;
@@ -58,8 +60,10 @@ export const UserManagementPanel: React.FC<UserManagementPanelProps> = ({
   onAddUser,
   onUpdateUser,
   onDeleteUser,
-  hasSpreadsheetToken,
+  isBridgeConnected,
   hasSpreadsheetId,
+  hasUnsavedChanges = false,
+  unsavedChangesCount = 0,
   isSyncingUsers = false,
   onRefreshUsersFromSheet,
   onPushUsersToSheet,
@@ -139,7 +143,7 @@ export const UserManagementPanel: React.FC<UserManagementPanelProps> = ({
     setEmail('');
     setInitialPassword('');
     setFormSuccess(
-      `Akun "${newAcc.username}" berhasil ditambahkan${hasSpreadsheetId && hasSpreadsheetToken ? ' & siap disinkronkan ke tab Master_Pengguna' : ''}.`
+      `Akun "${newAcc.username}" berhasil ditambahkan${hasSpreadsheetId && isBridgeConnected ? ' — klik Update Database untuk menyimpan ke tab Master_Pengguna.' : '.'}`
     );
   };
 
@@ -229,7 +233,7 @@ export const UserManagementPanel: React.FC<UserManagementPanelProps> = ({
             <button
               type="button"
               onClick={onRefreshUsersFromSheet}
-              disabled={!hasSpreadsheetToken || !hasSpreadsheetId || isSyncingUsers}
+              disabled={(!isBridgeConnected && !hasSpreadsheetId) || isSyncingUsers}
               className="px-3.5 py-2 bg-white hover:bg-slate-50 disabled:opacity-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncingUsers ? 'animate-spin' : ''}`} />
@@ -240,11 +244,18 @@ export const UserManagementPanel: React.FC<UserManagementPanelProps> = ({
             <button
               type="button"
               onClick={onPushUsersToSheet}
-              disabled={!hasSpreadsheetToken || isSyncingUsers}
-              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              disabled={isSyncingUsers}
+              className={`px-3.5 py-2 disabled:opacity-50 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer transition ${
+                hasUnsavedChanges
+                  ? 'bg-amber-600 hover:bg-amber-700 shadow-sm'
+                  : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
             >
               <UploadCloud className="w-3.5 h-3.5" />
-              <span>Simpan ke Spreadsheet</span>
+              <span>
+                Update Database
+                {hasUnsavedChanges && unsavedChangesCount > 0 ? ` (${unsavedChangesCount})` : ''}
+              </span>
             </button>
           )}
         </div>
@@ -301,7 +312,7 @@ export const UserManagementPanel: React.FC<UserManagementPanelProps> = ({
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Email Google (Opsional — untuk 1-klik login Google)
+              Email (Opsional — untuk login atau notifikasi)
             </label>
             <input
               type="email"

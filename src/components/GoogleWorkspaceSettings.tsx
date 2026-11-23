@@ -1,28 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   FileSpreadsheet,
   HardDrive,
   Mail,
   ShieldCheck,
   RefreshCw,
-  Plus,
   ExternalLink,
   CheckCircle2,
   AlertTriangle,
   FolderOpen,
   Send,
   Loader2,
-  KeyRound,
   Download,
   HelpCircle,
-  Search,
   Database,
-  Clock
+  Clock,
+  UploadCloud,
+  Share2,
+  Copy,
+  Check,
+  Link2,
+  Layers
 } from 'lucide-react';
-import { WorkspaceConfig, OfficeAsset, GoogleUserProfile } from '../types';
-import { sendGmailMessage } from '../services/gmailService';
+import { WorkspaceConfig, OfficeAsset } from '../types';
 import { SpreadsheetConfirmAction } from './SpreadsheetConfirmModal';
-import { getEffectiveGoogleClientId, setCustomGoogleClientId } from '../services/auth';
+import {
+  buildMultiDeviceShareUrl,
+  extractSpreadsheetId,
+  isValidBridgeUrl,
+  sendEmailViaBridge
+} from '../services/cloudBridgeService';
 import {
   TAB_ASSETS,
   TAB_TRANSACTIONS,
@@ -38,19 +45,23 @@ import {
 } from '../services/sheetsService';
 
 interface GoogleWorkspaceSettingsProps {
-  user: GoogleUserProfile | null;
-  token: string | null;
-  onSignIn: () => void;
   workspaceConfig: WorkspaceConfig;
   onUpdateConfig: (newConfig: Partial<WorkspaceConfig>) => void;
   assets: OfficeAsset[];
-  onSyncAll: () => Promise<void>;
-  onPullFromSheet?: () => Promise<void>;
+  hasUnsavedChanges?: boolean;
+  unsavedChangesCount?: number;
+  onUpdateDatabase: () => void;
+  onPullFromSheet: () => void;
   onRequestSpreadsheetAction?: (action: SpreadsheetConfirmAction) => void;
-  onFindExistingSpreadsheet?: () => Promise<void>;
+  onTestBridgeConnection?: (
+    bridgeUrl: string,
+    bridgeKey?: string,
+    spreadsheetId?: string | null
+  ) => Promise<void>;
   onDisableAutoSync?: () => void;
-  onOpenAuthHelp?: () => void;
+  onOpenBridgeHelp?: () => void;
   isSyncing: boolean;
+  currentUserEmail?: string | null;
 }
 
 const SYNCED_TABS_LABELS = [
@@ -68,23 +79,25 @@ const SYNCED_TABS_LABELS = [
 ];
 
 export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = ({
-  user,
-  token,
-  onSignIn,
   workspaceConfig,
   onUpdateConfig,
   assets,
-  onSyncAll,
+  hasUnsavedChanges = false,
+  unsavedChangesCount = 0,
+  onUpdateDatabase,
   onPullFromSheet,
   onRequestSpreadsheetAction,
-  onFindExistingSpreadsheet,
+  onTestBridgeConnection,
   onDisableAutoSync,
-  onOpenAuthHelp,
+  onOpenBridgeHelp,
   isSyncing,
+  currentUserEmail,
 }) => {
-  const [isSearchingDrive, setIsSearchingDrive] = useState(false);
+  const [bridgeUrlInput, setBridgeUrlInput] = useState(workspaceConfig.cloudBridgeUrl || '');
+  const [bridgeKeyInput, setBridgeKeyInput] = useState(workspaceConfig.cloudBridgeKey || '');
   const [customSheetId, setCustomSheetId] = useState(workspaceConfig.spreadsheetId || '');
-  const [oauthClientInput, setOauthClientInput] = useState(() => getEffectiveGoogleClientId());
+  const [isTestingBridge, setIsTestingBridge] = useState(false);
+  const [copiedShare, setCopiedShare] = useState(false);
   const [testEmailStatus, setTestEmailStatus] = useState<string | null>(null);
   const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(
@@ -92,60 +105,84 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
   );
 
   useEffect(() => {
+    setBridgeUrlInput(workspaceConfig.cloudBridgeUrl || '');
+    setBridgeKeyInput(workspaceConfig.cloudBridgeKey || '');
     setCustomSheetId(workspaceConfig.spreadsheetId || '');
-  }, [workspaceConfig.spreadsheetId]);
+  }, [
+    workspaceConfig.cloudBridgeUrl,
+    workspaceConfig.cloudBridgeKey,
+    workspaceConfig.spreadsheetId,
+  ]);
 
-  const handleSaveOAuthClientId = () => {
-    setCustomGoogleClientId(oauthClientInput);
-    onUpdateConfig({ oauthClientId: oauthClientInput.trim() || undefined });
-    setFeedbackMsg({
-      type: 'success',
-      text: 'Google OAuth Client ID berhasil disimpan (mode Google OAuth langsung tanpa Firebase).',
+  const isBridgeConnected = isValidBridgeUrl(workspaceConfig.cloudBridgeUrl);
+  const isAutoSyncActive = Boolean(
+    isBridgeConnected && workspaceConfig.autoSyncSpreadsheet
+  );
+
+  const shareUrl = useMemo(
+    () =>
+      buildMultiDeviceShareUrl(
+        bridgeUrlInput.trim() || workspaceConfig.cloudBridgeUrl,
+        customSheetId.trim() || workspaceConfig.spreadsheetId,
+        bridgeKeyInput.trim() || workspaceConfig.cloudBridgeKey
+      ),
+    [
+      bridgeUrlInput,
+      workspaceConfig.cloudBridgeUrl,
+      customSheetId,
+      workspaceConfig.spreadsheetId,
+      bridgeKeyInput,
+      workspaceConfig.cloudBridgeKey,
+    ]
+  );
+
+  const handleSaveAndTestBridge = async () => {
+    const cleanUrl = bridgeUrlInput.trim();
+    const cleanKey = bridgeKeyInput.trim();
+    const cleanSheet = extractSpreadsheetId(customSheetId);
+
+    if (!isValidBridgeUrl(cleanUrl)) {
+      setFeedbackMsg({
+        type: 'error',
+        text: 'Masukkan URL Web App Google Apps Script yang valid (https://script.google.com/macros/s/.../exec).',
+      });
+      return;
+    }
+
+    onUpdateConfig({
+      cloudBridgeUrl: cleanUrl,
+      cloudBridgeKey: cleanKey || undefined,
+      ...(cleanSheet
+        ? {
+            spreadsheetId: cleanSheet,
+            spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanSheet}/edit`,
+          }
+        : {}),
     });
-  };
 
-  const handleCreateNewSpreadsheetClick = () => {
-    if (!token) {
-      setFeedbackMsg({
-        type: 'error',
-        text: 'Silakan masuk dengan akun Google terlebih dahulu.',
-      });
-      return;
-    }
-    if (onRequestSpreadsheetAction) {
-      onRequestSpreadsheetAction('create_db');
-    } else {
-      onSyncAll();
-    }
-  };
-
-  const handleFindDriveClick = async () => {
-    if (!token || !onFindExistingSpreadsheet) {
-      setFeedbackMsg({
-        type: 'error',
-        text: 'Silakan masuk dengan akun Google terlebih dahulu.',
-      });
-      return;
-    }
-    setIsSearchingDrive(true);
-    setFeedbackMsg(null);
-    try {
-      await onFindExistingSpreadsheet();
-    } catch (err: any) {
-      setFeedbackMsg({
-        type: 'error',
-        text: err?.message || 'Gagal mencari file Spreadsheet di Google Drive.',
-      });
-    } finally {
-      setIsSearchingDrive(false);
+    if (onTestBridgeConnection) {
+      setIsTestingBridge(true);
+      setFeedbackMsg(null);
+      try {
+        await onTestBridgeConnection(cleanUrl, cleanKey, cleanSheet);
+        setFeedbackMsg({
+          type: 'success',
+          text: 'Cloud Bridge terhubung ke Google Spreadsheet aktif! Anda kini bisa Update Database atau Muat Ulang di semua perangkat.',
+        });
+      } catch (err: any) {
+        setFeedbackMsg({
+          type: 'error',
+          text: err?.message || 'Gagal menghubungi URL Web App Bridge.',
+        });
+      } finally {
+        setIsTestingBridge(false);
+      }
     }
   };
 
   const handleSaveCustomSheetId = () => {
-    if (!customSheetId.trim()) return;
-    const cleanId = customSheetId.includes('/d/')
-      ? customSheetId.split('/d/')[1].split('/')[0]
-      : customSheetId.trim();
+    const cleanId = extractSpreadsheetId(customSheetId);
+    if (!cleanId) return;
 
     onUpdateConfig({
       spreadsheetId: cleanId,
@@ -154,16 +191,25 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
 
     setFeedbackMsg({
       type: 'success',
-      text: 'ID Google Spreadsheet berhasil ditautkan. Anda dapat menekan "Muat Database" atau "Simpan Database".',
+      text: 'ID Google Spreadsheet berhasil ditautkan.',
     });
   };
 
+  const handleCopyShareUrl = async () => {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedShare(true);
+      setTimeout(() => setCopiedShare(false), 2500);
+    } catch {}
+  };
+
   const handleSendTestEmail = async () => {
-    if (!token) {
-      setTestEmailStatus('Silakan login dengan Google terlebih dahulu.');
+    if (!workspaceConfig.cloudBridgeUrl) {
+      setTestEmailStatus('Hubungkan URL Cloud Bridge Apps Script terlebih dahulu.');
       return;
     }
-    const targetEmail = workspaceConfig.notificationEmail || user?.email;
+    const targetEmail = workspaceConfig.notificationEmail || currentUserEmail;
     if (!targetEmail) {
       setTestEmailStatus('Alamat email tujuan belum diisi.');
       return;
@@ -173,89 +219,83 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
     setTestEmailStatus(null);
 
     try {
-      await sendGmailMessage(token, {
-        to: targetEmail,
-        subject: '[AsetKantor] Uji Coba Integrasi Notifikasi Gmail',
-        htmlBody: `
-          <div style="font-family: sans-serif; padding: 20px; background-color: #f8fafc; border-radius: 8px;">
-            <h2 style="color: #0f172a; margin-top: 0;">Integrasi Gmail AsetKantor Berhasil! 🎉</h2>
-            <p style="color: #334155; font-size: 14px;">
-              Email ini membuktikan bahwa aplikasi Sistem Manajemen Aset Kantor Anda berhasil terhubung dengan akun Gmail Anda.
-            </p>
-            <p style="color: #64748b; font-size: 13px;">
-              Setiap kali terjadi mutasi penting, peminjaman barang oleh staf, atau laporan kerusakan, notifikasi email otomatis akan dikirim ke alamat ini.
-            </p>
-            <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 15px 0;" />
-            <p style="font-size: 11px; color: #94a3b8;">Waktu Uji Coba: ${new Date().toLocaleString('id-ID')}</p>
-          </div>
-        `,
-      });
+      await sendEmailViaBridge(
+        workspaceConfig.cloudBridgeUrl,
+        {
+          to: targetEmail,
+          subject: '[AsetKantor] Uji Coba Notifikasi Email Cloud Bridge',
+          htmlBody: `
+            <div style="font-family: sans-serif; padding: 20px; background-color: #f8fafc; border-radius: 8px;">
+              <h2 style="color: #0f172a; margin-top: 0;">Notifikasi Email AsetKantor Aktif!</h2>
+              <p style="color: #334155; font-size: 14px;">
+                Email ini dikirim melalui Google Apps Script Cloud Bridge (tanpa memerlukan login Google pengguna).
+              </p>
+              <p style="color: #64748b; font-size: 13px;">
+                Setiap kali terjadi peminjaman barang, laporan kerusakan, atau peringatan stok kritis, pemberitahuan akan dikirim ke alamat ini.
+              </p>
+              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 15px 0;" />
+              <p style="font-size: 11px; color: #94a3b8;">Waktu Uji Coba: ${new Date().toLocaleString('id-ID')}</p>
+            </div>
+          `,
+        },
+        workspaceConfig.cloudBridgeKey
+      );
 
-      setTestEmailStatus(`✓ Berhasil terkirim ke ${targetEmail}! Silakan periksa inbox Anda.`);
+      setTestEmailStatus(`Berhasil terkirim ke ${targetEmail}! Silakan periksa inbox Anda.`);
     } catch (err: any) {
-      setTestEmailStatus(`Gagal mengirim: ${err.message || 'Pastikan izin Gmail API aktif.'}`);
+      setTestEmailStatus(`Gagal mengirim: ${err.message || 'Pastikan deployment Apps Script memiliki izin MailApp.'}`);
     } finally {
       setIsSendingTestEmail(false);
     }
   };
 
-  const isAutoSyncActive = Boolean(
-    token && workspaceConfig.spreadsheetId && workspaceConfig.autoSyncSpreadsheet
-  );
-
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
-      {/* Overview Card */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs">
+      {/* Overview & Cloud Bridge Card */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-md">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-600 via-teal-600 to-blue-600 flex items-center justify-center text-white shadow-md shrink-0">
               <ShieldCheck className="w-6 h-6" />
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-900">
-                Integrasi Ekosistem Google Workspace
+                Database Spreadsheet Online &amp; Google Drive (Tanpa Login Google)
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Google Spreadsheet (Database Utama 11 Tab), Google Drive (Semua Foto, Logo &amp; TTD BAST), &amp; Gmail (Notifikasi)
+                Semua data 11 tab, akun login (<code>Master_Pengguna</code>), gambar Google Drive, dan email berjalan lewat Cloud Bridge Apps Script — bisa online di semua HP &amp; laptop.
               </p>
             </div>
           </div>
 
-          {!token ? (
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {isBridgeConnected ? (
+              <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>Bridge Online Terhubung</span>
+              </span>
+            ) : (
+              <span className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600" />
+                <span>Bridge Belum Terhubung</span>
+              </span>
+            )}
+            {onOpenBridgeHelp && (
               <button
                 type="button"
-                onClick={onSignIn}
-                className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition cursor-pointer"
+                onClick={onOpenBridgeHelp}
+                className="flex items-center gap-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
               >
-                <KeyRound className="w-4 h-4 text-amber-400" />
-                <span>Otorisasi Akun Google</span>
+                <HelpCircle className="w-4 h-4 text-amber-600" />
+                <span>Panduan &amp; Kode Code.gs</span>
               </button>
-              {onOpenAuthHelp && (
-                <button
-                  type="button"
-                  onClick={onOpenAuthHelp}
-                  className="flex items-center gap-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer"
-                >
-                  <HelpCircle className="w-4 h-4 text-amber-600" />
-                  <span>Gagal Login di GitHub?</span>
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                Terhubung sebagai {user?.email}
-              </span>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {feedbackMsg && (
           <div
-            className={`mt-4 p-3 rounded-xl text-xs flex items-center gap-2 ${
+            className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
               feedbackMsg.type === 'success'
                 ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
                 : 'bg-rose-50 text-rose-800 border border-rose-200'
@@ -270,28 +310,87 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
           </div>
         )}
 
-        {/* Direct Google OAuth Client ID (Non-Firebase) */}
-        <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-end gap-2">
-          <div className="flex-1">
-            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-              Google OAuth Client ID (Koneksi Langsung Google Cloud — Non-Firebase)
-            </label>
-            <input
-              type="text"
-              value={oauthClientInput}
-              onChange={(e) => setOauthClientInput(e.target.value)}
-              placeholder="xxxx.apps.googleusercontent.com"
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-mono text-slate-700"
-            />
+        {/* Cloud Bridge Web App URL Inputs */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                URL Web App Cloud Bridge (Google Apps Script <code>/exec</code>)
+              </label>
+              <input
+                type="url"
+                value={bridgeUrlInput}
+                onChange={(e) => setBridgeUrlInput(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-mono text-slate-800"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                Kunci Akses Bridge (Opsional)
+              </label>
+              <input
+                type="text"
+                value={bridgeKeyInput}
+                onChange={(e) => setBridgeKeyInput(e.target.value)}
+                placeholder="Sesuai ACCESS_KEY di Code.gs"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-mono text-slate-800"
+              />
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={handleSaveOAuthClientId}
-            className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 transition cursor-pointer shrink-0"
-          >
-            Simpan Client ID
-          </button>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={handleSaveAndTestBridge}
+              disabled={isTestingBridge || isSyncing}
+              className="px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              {isTestingBridge ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Link2 className="w-3.5 h-3.5 text-emerald-400" />
+              )}
+              <span>Tes &amp; Hubungkan Bridge</span>
+            </button>
+
+            {onOpenBridgeHelp && (
+              <button
+                type="button"
+                onClick={onOpenBridgeHelp}
+                className="text-xs font-semibold text-blue-600 hover:underline cursor-pointer"
+              >
+                Belum punya URL Bridge? Salin Kode Code.gs &rarr;
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Share Link for All Devices */}
+        {isBridgeConnected && (
+          <div className="p-3.5 rounded-xl bg-blue-50/70 border border-blue-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="min-w-0 space-y-0.5">
+              <div className="text-xs font-bold text-blue-950 flex items-center gap-1.5">
+                <Share2 className="w-3.5 h-3.5 text-blue-600" />
+                <span>Tautan Akses Online Semua Device (HP / Tablet / Laptop Lain)</span>
+              </div>
+              <p className="text-[11px] text-blue-800">
+                Bagikan tautan ini ke staf agar perangkat mereka langsung terhubung ke Spreadsheet aktif tanpa mengetik URL Bridge lagi.
+              </p>
+              <code className="block text-[10px] font-mono text-slate-700 bg-white px-2.5 py-1 rounded-lg border border-blue-200/80 truncate mt-1">
+                {shareUrl}
+              </code>
+            </div>
+            <button
+              type="button"
+              onClick={handleCopyShareUrl}
+              className="shrink-0 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              {copiedShare ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedShare ? 'Link Tersalin!' : 'Salin Link Device'}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 1. Google Sheets Full Database Card */}
@@ -304,7 +403,7 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h4 className="text-sm font-bold text-slate-900">
-                  1. Google Spreadsheet (Database Utama Aplikasi)
+                  1. Google Spreadsheet (Database Utama 11 Tab)
                 </h4>
                 {isAutoSyncActive && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold">
@@ -312,9 +411,14 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
                     Auto-Sync Aktif
                   </span>
                 )}
+                {hasUnsavedChanges && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 text-[10px] font-bold border border-amber-200">
+                    {unsavedChangesCount} Perubahan Belum Di-Update
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Seluruh aset, mutasi, pemeliharaan, stock opname, BAPA, lokasi, vendor, pengaturan, &amp; akun pengguna disimpan dalam 11 tab Spreadsheet.
+                Seluruh aset, mutasi, pemeliharaan, stock opname, BAPA, lokasi, vendor, pengaturan, &amp; akun pengguna disimpan di 11 tab Spreadsheet.
               </p>
             </div>
           </div>
@@ -335,14 +439,11 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
         {/* 11 Tabs Overview */}
         <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
-            <span className="font-semibold text-slate-700">
-              11 Tab Database Tersinkronisasi:
-            </span>
+            <span className="font-semibold text-slate-700">11 Tab Database Tersinkronisasi:</span>
             {workspaceConfig.lastSyncedAt && (
               <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
                 <Clock className="w-3 h-3" />
-                Terakhir sinkron:{' '}
-                {new Date(workspaceConfig.lastSyncedAt).toLocaleString('id-ID')}
+                Terakhir update: {new Date(workspaceConfig.lastSyncedAt).toLocaleString('id-ID')}
               </span>
             )}
           </div>
@@ -363,11 +464,11 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
           <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2">
             <div className="flex-1">
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                ID atau URL Google Spreadsheet Database
+                ID atau URL Google Spreadsheet (Opsional jika Bridge terpasang langsung di Spreadsheet)
               </label>
               <input
                 type="text"
-                placeholder="Tempel URL atau ID Spreadsheet, atau klik Cari / Buat Baru"
+                placeholder="Tempel URL atau ID Spreadsheet..."
                 value={customSheetId}
                 onChange={(e) => setCustomSheetId(e.target.value)}
                 className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-mono"
@@ -384,67 +485,50 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            {onFindExistingSpreadsheet && (
-              <button
-                type="button"
-                onClick={handleFindDriveClick}
-                disabled={isSearchingDrive || isSyncing || !token}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-100 disabled:opacity-50 text-slate-800 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-              >
-                {isSearchingDrive ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Search className="w-3.5 h-3.5 text-indigo-600" />
-                )}
-                <span>Cari Spreadsheet Lama di Drive</span>
-              </button>
-            )}
-
             <button
               type="button"
-              onClick={handleCreateNewSpreadsheetClick}
-              disabled={isSyncing || !token}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+              onClick={onUpdateDatabase}
+              disabled={isSyncing}
+              className={`flex items-center gap-1.5 px-4 py-2 text-white rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50 ${
+                hasUnsavedChanges
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
             >
               {isSyncing ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <Plus className="w-3.5 h-3.5" />
+                <UploadCloud className="w-3.5 h-3.5" />
               )}
-              <span>Buat Database Spreadsheet Baru</span>
+              <span>
+                Update Database Sekarang ({assets.length} Aset
+                {hasUnsavedChanges && unsavedChangesCount > 0 ? ` · ${unsavedChangesCount} perubahan` : ''})
+              </span>
             </button>
 
-            {workspaceConfig.spreadsheetId && (
-              <>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onRequestSpreadsheetAction
-                      ? onRequestSpreadsheetAction('push_full_db')
-                      : onSyncAll()
-                  }
-                  disabled={isSyncing || !token}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span>Simpan Full DB ke Sheets ({assets.length} Aset)</span>
-                </button>
+            <button
+              type="button"
+              onClick={onPullFromSheet}
+              disabled={isSyncing || !isBridgeConnected}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Muat Ulang dari Spreadsheet</span>
+            </button>
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    onRequestSpreadsheetAction
-                      ? onRequestSpreadsheetAction('pull_full_db')
-                      : onPullFromSheet?.()
-                  }
-                  disabled={isSyncing || !token}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Muat Full DB dari Sheets</span>
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              onClick={() =>
+                onRequestSpreadsheetAction
+                  ? onRequestSpreadsheetAction('init_db')
+                  : onUpdateDatabase()
+              }
+              disabled={isSyncing || !isBridgeConnected}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-100 disabled:opacity-50 text-slate-800 border border-slate-300 rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer"
+            >
+              <Layers className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Inisialisasi 11 Tab</span>
+            </button>
           </div>
 
           {/* Real-Time Auto-Sync Toggle */}
@@ -454,12 +538,12 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
                 workspaceConfig.autoSyncSpreadsheet
                   ? 'bg-emerald-50/70 border-emerald-200'
                   : 'bg-white border-slate-200'
-              } ${!token ? 'opacity-60' : 'cursor-pointer'}`}
+              } ${!isBridgeConnected ? 'opacity-60' : 'cursor-pointer'}`}
             >
               <input
                 type="checkbox"
                 checked={Boolean(workspaceConfig.autoSyncSpreadsheet)}
-                disabled={!token || isSyncing}
+                disabled={!isBridgeConnected || isSyncing}
                 onChange={(e) => {
                   if (e.target.checked) {
                     if (onRequestSpreadsheetAction) {
@@ -478,7 +562,7 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
                   Mode Database Real-Time (Auto-Sync Setiap Perubahan)
                 </div>
                 <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
-                  Jika diaktifkan, setiap penambahan/edit/hapus aset, mutasi barang, servis, opname, penghapusan BAPA, pengaturan aplikasi, maupun akun pengguna otomatis disimpan ke 11 tab Google Spreadsheet &amp; gambar ke Google Drive.
+                  Jika dimatikan, Anda bekerja offline/lokal cepat dan mengklik tombol <strong>Update Database</strong> kapan pun siap mengirim semua perubahan ke Spreadsheet. Jika diaktifkan, setiap perubahan otomatis dikirim ke Spreadsheet setelah jeda singkat.
                 </p>
               </div>
             </label>
@@ -497,7 +581,7 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
               2. Google Drive (Penyimpanan Semua Gambar &amp; Dokumen Visual)
             </h4>
             <p className="text-xs text-slate-500">
-              Foto aset (tambah &amp; edit), foto kondisi mutasi, tanda tangan BAST, nota servis, dan logo perusahaan otomatis diunggah ke Google Drive.
+              Foto aset, foto kondisi mutasi, tanda tangan BAST, nota servis, dan logo perusahaan diunggah otomatis ke Google Drive melalui Cloud Bridge.
             </p>
           </div>
         </div>
@@ -521,7 +605,7 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
         </div>
       </div>
 
-      {/* 3. Gmail Notification Settings Card */}
+      {/* 3. Email Notification Settings Card */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
@@ -529,10 +613,10 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
           </div>
           <div>
             <h4 className="text-sm font-bold text-slate-900">
-              3. Gmail API (Notifikasi Status Perubahan Signifikan)
+              3. Notifikasi Email Otomatis (via Bridge MailApp)
             </h4>
             <p className="text-xs text-slate-500">
-              Kirim email alert otomatis untuk peminjaman, kerusakan barang, dan peringatan stok kritis.
+              Kirim email alert otomatis untuk peminjaman, kerusakan barang, dan peringatan stok kritis melalui Apps Script.
             </p>
           </div>
         </div>
@@ -542,18 +626,19 @@ export const GoogleWorkspaceSettings: React.FC<GoogleWorkspaceSettingsProps> = (
             <label className="block text-xs font-semibold text-slate-700 mb-1">
               Email Penerima Notifikasi Utama (Default PIC / Manajer)
             </label>
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 type="email"
                 placeholder="manajer.aset@kantor.com"
-                value={workspaceConfig.notificationEmail || user?.email || ''}
+                value={workspaceConfig.notificationEmail || currentUserEmail || ''}
                 onChange={(e) => onUpdateConfig({ notificationEmail: e.target.value })}
                 className="w-full max-w-md px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs"
               />
               <button
+                type="button"
                 onClick={handleSendTestEmail}
-                disabled={isSendingTestEmail || !token}
-                className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition cursor-pointer"
+                disabled={isSendingTestEmail || !isBridgeConnected}
+                className="flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition cursor-pointer"
               >
                 {isSendingTestEmail ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />

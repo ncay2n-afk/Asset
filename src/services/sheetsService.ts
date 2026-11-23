@@ -173,7 +173,7 @@ export const USER_HEADERS = [
   'Login Terakhir',
 ];
 
-const ALL_TABS_CONFIG: { title: string; headers: string[] }[] = [
+export const ALL_TABS_CONFIG: { title: string; headers: string[] }[] = [
   { title: TAB_ASSETS, headers: ASSET_HEADERS },
   { title: TAB_TRANSACTIONS, headers: TRANSACTION_HEADERS },
   { title: TAB_MAINTENANCE, headers: MAINTENANCE_HEADERS },
@@ -195,176 +195,6 @@ function safeCell(val: string | number | boolean | null | undefined): string {
     return '';
   }
   return str;
-}
-
-export async function findDatabaseSpreadsheet(
-  token: string,
-  namePrefix: string = 'AsetKantor_Database_Inventaris'
-): Promise<{ spreadsheetId: string; spreadsheetUrl: string; name: string } | null> {
-  const query = `name contains '${namePrefix.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`;
-  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-    query
-  )}&orderBy=modifiedTime desc&pageSize=5&fields=files(id,name,webViewLink)`;
-
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!res.ok) return null;
-  const data = await res.json();
-  const first = data?.files?.[0];
-  if (!first?.id) return null;
-
-  return {
-    spreadsheetId: first.id,
-    spreadsheetUrl: first.webViewLink || `https://docs.google.com/spreadsheets/d/${first.id}/edit`,
-    name: first.name || namePrefix,
-  };
-}
-
-export async function createSpreadsheet(
-  token: string,
-  title: string = 'AsetKantor_Database_Inventaris'
-): Promise<{ spreadsheetId: string; spreadsheetUrl: string }> {
-  return createDatabaseSpreadsheet(token, title);
-}
-
-export async function createDatabaseSpreadsheet(
-  token: string,
-  title: string = 'AsetKantor_Database_Inventaris'
-): Promise<{ spreadsheetId: string; spreadsheetUrl: string }> {
-  const payload = {
-    properties: {
-      title,
-    },
-    sheets: ALL_TABS_CONFIG.map((tab) => ({
-      properties: {
-        title: tab.title,
-        gridProperties: { rowCount: 1000, columnCount: Math.max(tab.headers.length + 2, 10) },
-      },
-    })),
-  };
-
-  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gagal membuat Database Google Spreadsheet: ${res.status} ${errText}`);
-  }
-
-  const data = await res.json();
-  const spreadsheetId = data.spreadsheetId;
-  const spreadsheetUrl =
-    data.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-
-  // Write headers for all tabs in one batchUpdate call
-  const headerData = ALL_TABS_CONFIG.map((tab) => ({
-    range: `${tab.title}!A1`,
-    majorDimension: 'ROWS',
-    values: [tab.headers],
-  }));
-
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      valueInputOption: 'USER_ENTERED',
-      data: headerData,
-    }),
-  });
-
-  return { spreadsheetId, spreadsheetUrl };
-}
-
-export async function ensureDatabaseTabs(token: string, spreadsheetId: string): Promise<string[]> {
-  const metaRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
-
-  if (!metaRes.ok) {
-    const errText = await metaRes.text();
-    throw new Error(`Gagal membaca struktur Google Spreadsheet (${metaRes.status}): ${errText}`);
-  }
-
-  const meta = await metaRes.json();
-  const existingTitles: string[] = (meta.sheets || [])
-    .map((s: any) => s?.properties?.title)
-    .filter(Boolean);
-
-  const missingTabs = ALL_TABS_CONFIG.filter((tab) => !existingTitles.includes(tab.title));
-
-  if (missingTabs.length > 0) {
-    const addRequests = missingTabs.map((tab) => ({
-      addSheet: {
-        properties: {
-          title: tab.title,
-          gridProperties: { rowCount: 1000, columnCount: Math.max(tab.headers.length + 2, 10) },
-        },
-      },
-    }));
-
-    const batchRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ requests: addRequests }),
-      }
-    );
-
-    if (!batchRes.ok) {
-      const errText = await batchRes.text();
-      throw new Error(`Gagal membuat tab database di Spreadsheet: ${errText}`);
-    }
-  }
-
-  return ALL_TABS_CONFIG.map((t) => t.title);
-}
-
-export async function appendRow(
-  token: string,
-  spreadsheetId: string,
-  sheetName: string,
-  rowValues: (string | number | boolean | null | undefined)[]
-): Promise<void> {
-  const safeValues = rowValues.map((v) => safeCell(v));
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    sheetName
-  )}!A1:append?valueInputOption=USER_ENTERED`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      range: `${sheetName}!A1`,
-      majorDimension: 'ROWS',
-      values: [safeValues],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gagal menulis baris ke Google Sheets: ${res.status} ${errText}`);
-  }
 }
 
 export function assetToRow(asset: OfficeAsset): string[] {
@@ -582,346 +412,145 @@ export function parseUserRows(rows: string[][]): AppUserAccount[] {
   return rows
     .filter((r) => (r[0] && String(r[0]).trim() !== '') || (r[1] && String(r[1]).trim() !== ''))
     .map((r, idx) => ({
-      id: r[0]?.trim() || `USR-${String(idx + 1).padStart(3, '0')}`,
-      username: (r[1] || r[3] || `user${idx + 1}`).trim().toLowerCase(),
-      fullName: r[2]?.trim() || r[1]?.trim() || 'Pengguna',
-      email: (r[3] || '').trim(),
+      id: String(r[0] ?? '').trim() || `USR-${String(idx + 1).padStart(3, '0')}`,
+      username: String(r[1] ?? r[3] ?? `user${idx + 1}`).trim().toLowerCase(),
+      fullName: String(r[2] ?? r[1] ?? 'Pengguna').trim() || 'Pengguna',
+      email: String(r[3] ?? '').trim(),
       role: normalizeUserRole(r[4]),
-      department: r[5]?.trim() || 'Umum',
+      department: String(r[5] ?? '').trim() || 'Umum',
       isActive: parseActiveStatus(r[6]),
-      passwordHash: (r[7] || '').trim(),
-      passwordSalt: (r[8] || '').trim(),
-      createdAt: r[9]?.trim() || new Date().toISOString(),
-      lastLoginAt: r[10]?.trim() || undefined,
+      passwordHash: String(r[7] ?? '').trim(),
+      passwordSalt: String(r[8] ?? '').trim(),
+      createdAt: String(r[9] ?? '').trim() || new Date().toISOString(),
+      lastLoginAt: String(r[10] ?? '').trim() || undefined,
     }));
-}
-
-export async function fetchUsersFromSpreadsheet(
-  token: string,
-  spreadsheetId: string
-): Promise<AppUserAccount[]> {
-  const metaRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
-  if (!metaRes.ok) {
-    const errText = await metaRes.text();
-    throw new Error(`Gagal memeriksa tab ${TAB_USERS} di Spreadsheet (${metaRes.status}): ${errText}`);
-  }
-  const meta = await metaRes.json();
-  const existingTitles: string[] = (meta.sheets || [])
-    .map((s: any) => s?.properties?.title)
-    .filter(Boolean);
-
-  if (!existingTitles.includes(TAB_USERS)) {
-    return [];
-  }
-
-  const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-      `${TAB_USERS}!A2:K1000`
-    )}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gagal membaca daftar user dari Spreadsheet: ${errText}`);
-  }
-
-  const data = await res.json();
-  return parseUserRows(data.values || []);
-}
-
-export async function syncUsersToSpreadsheet(
-  token: string,
-  spreadsheetId: string,
-  users: AppUserAccount[]
-): Promise<void> {
-  await ensureDatabaseTabs(token, spreadsheetId);
-
-  await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-      `${TAB_USERS}!A:Z`
-    )}:clear`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
-
-  const rows = [USER_HEADERS, ...users.map(userToRow)];
-  const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-      `${TAB_USERS}!A1`
-    )}?valueInputOption=USER_ENTERED`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        range: `${TAB_USERS}!A1`,
-        majorDimension: 'ROWS',
-        values: rows,
-      }),
-    }
-  );
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gagal menyimpan daftar akun ke tab ${TAB_USERS}: ${errText}`);
-  }
-}
-
-export async function saveFullDatabaseToSpreadsheet(
-  token: string,
-  spreadsheetId: string,
-  db: FullSpreadsheetDatabase
-): Promise<void> {
-  await ensureDatabaseTabs(token, spreadsheetId);
-
-  const rangesToClear = ALL_TABS_CONFIG.map((t) => `${t.title}!A:Z`);
-
-  const clearRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ ranges: rangesToClear }),
-    }
-  );
-
-  if (!clearRes.ok) {
-    const errText = await clearRes.text();
-    throw new Error(`Gagal membersihkan tab Spreadsheet sebelum update: ${errText}`);
-  }
-
-  const dataPayload = [
-    {
-      range: `${TAB_ASSETS}!A1`,
-      majorDimension: 'ROWS',
-      values: [ASSET_HEADERS, ...db.assets.map(assetToRow)],
-    },
-    {
-      range: `${TAB_TRANSACTIONS}!A1`,
-      majorDimension: 'ROWS',
-      values: [TRANSACTION_HEADERS, ...db.transactions.map(transactionToRow)],
-    },
-    {
-      range: `${TAB_MAINTENANCE}!A1`,
-      majorDimension: 'ROWS',
-      values: [MAINTENANCE_HEADERS, ...db.maintenanceRecords.map(maintenanceToRow)],
-    },
-    {
-      range: `${TAB_OPNAME}!A1`,
-      majorDimension: 'ROWS',
-      values: [OPNAME_HEADERS, ...db.stockOpnameSessions.map(opnameToRow)],
-    },
-    {
-      range: `${TAB_DISPOSAL}!A1`,
-      majorDimension: 'ROWS',
-      values: [DISPOSAL_HEADERS, ...db.disposalRecords.map(disposalToRow)],
-    },
-    {
-      range: `${TAB_LOCATIONS}!A1`,
-      majorDimension: 'ROWS',
-      values: [LOCATION_HEADERS, ...db.locations.map(locationToRow)],
-    },
-    {
-      range: `${TAB_VENDORS}!A1`,
-      majorDimension: 'ROWS',
-      values: [VENDOR_HEADERS, ...db.vendors.map(vendorToRow)],
-    },
-    {
-      range: `${TAB_DIVISIONS}!A1`,
-      majorDimension: 'ROWS',
-      values: [CODE_ITEM_HEADERS, ...db.customDivisions.map(codeItemToRow)],
-    },
-    {
-      range: `${TAB_SUB_KELOMPOKS}!A1`,
-      majorDimension: 'ROWS',
-      values: [CODE_ITEM_HEADERS, ...db.customSubKelompoks.map(codeItemToRow)],
-    },
-    {
-      range: `${TAB_SETTINGS}!A1`,
-      majorDimension: 'ROWS',
-      values: [SETTINGS_HEADERS, ...settingsToRows(db.companySettings, db.workspaceSettings)],
-    },
-    {
-      range: `${TAB_USERS}!A1`,
-      majorDimension: 'ROWS',
-      values: [USER_HEADERS, ...(db.users || []).map(userToRow)],
-    },
-  ];
-
-  const writeRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        valueInputOption: 'USER_ENTERED',
-        data: dataPayload,
-      }),
-    }
-  );
-
-  if (!writeRes.ok) {
-    const errText = await writeRes.text();
-    throw new Error(`Gagal menyimpan database ke Google Spreadsheet: ${errText}`);
-  }
 }
 
 function parseAssetsRows(rows: string[][]): OfficeAsset[] {
   return rows
     .filter((r) => r[0] && String(r[0]).trim() !== '')
     .map((r) => ({
-      id: r[0] || '',
-      name: r[1] || 'Aset Tanpa Nama',
+      id: String(r[0] ?? ''),
+      name: String(r[1] ?? '') || 'Aset Tanpa Nama',
       category: (r[2] as AssetCategory) || 'IT & Elektronik',
-      sku: r[3] || '',
+      sku: String(r[3] ?? ''),
       totalStock: Number(r[4]) || 0,
       availableStock: Number(r[5]) || 0,
       borrowedStock: Number(r[6]) || 0,
       damagedStock: Number(r[7]) || 0,
-      unit: r[8] || 'Unit',
-      location: r[9] || 'Kantor',
+      unit: String(r[8] ?? '') || 'Unit',
+      location: String(r[9] ?? '') || 'Kantor',
       condition: (r[10] as AssetCondition) || 'Baik',
       status: (r[11] as AssetStatus) || 'Tersedia',
-      purchaseDate: r[12] || '',
+      purchaseDate: String(r[12] ?? ''),
       purchasePrice: Number(r[13]) || 0,
-      custodian: r[14] || '',
+      custodian: String(r[14] ?? ''),
       lastPhotoUrl: normalizeDriveImageUrl(r[15] || ''),
-      lastPhotoDate: r[16] || '',
-      notes: r[17] || '',
-      updatedAt: r[18] || new Date().toISOString(),
-      serialNumber: r[19] || undefined,
+      lastPhotoDate: String(r[16] ?? ''),
+      notes: String(r[17] ?? ''),
+      updatedAt: String(r[18] ?? '') || new Date().toISOString(),
+      serialNumber: r[19] ? String(r[19]) : undefined,
       usefulLifeYears: r[20] ? Number(r[20]) : undefined,
       residualValue: r[21] ? Number(r[21]) : undefined,
-      warrantyExpiryDate: r[22] || undefined,
-      taxExpiryDate: r[23] || undefined,
+      warrantyExpiryDate: r[22] ? String(r[22]) : undefined,
+      taxExpiryDate: r[23] ? String(r[23]) : undefined,
     }));
 }
 
-export async function loadFullDatabaseFromSpreadsheet(
-  token: string,
-  spreadsheetId: string
-): Promise<Partial<FullSpreadsheetDatabase>> {
-  const metaRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
+/**
+ * Serializes the entire 11-tab application database into { [tabName]: [[headers...], ...rows] }.
+ */
+export function serializeDatabaseToTabs(db: FullSpreadsheetDatabase): Record<string, string[][]> {
+  return {
+    [TAB_ASSETS]: [ASSET_HEADERS, ...db.assets.map(assetToRow)],
+    [TAB_TRANSACTIONS]: [TRANSACTION_HEADERS, ...db.transactions.map(transactionToRow)],
+    [TAB_MAINTENANCE]: [MAINTENANCE_HEADERS, ...db.maintenanceRecords.map(maintenanceToRow)],
+    [TAB_OPNAME]: [OPNAME_HEADERS, ...db.stockOpnameSessions.map(opnameToRow)],
+    [TAB_DISPOSAL]: [DISPOSAL_HEADERS, ...db.disposalRecords.map(disposalToRow)],
+    [TAB_LOCATIONS]: [LOCATION_HEADERS, ...db.locations.map(locationToRow)],
+    [TAB_VENDORS]: [VENDOR_HEADERS, ...db.vendors.map(vendorToRow)],
+    [TAB_DIVISIONS]: [CODE_ITEM_HEADERS, ...db.customDivisions.map(codeItemToRow)],
+    [TAB_SUB_KELOMPOKS]: [CODE_ITEM_HEADERS, ...db.customSubKelompoks.map(codeItemToRow)],
+    [TAB_SETTINGS]: [SETTINGS_HEADERS, ...settingsToRows(db.companySettings, db.workspaceSettings)],
+    [TAB_USERS]: [USER_HEADERS, ...(db.users || []).map(userToRow)],
+  };
+}
 
-  if (!metaRes.ok) {
-    const errText = await metaRes.text();
-    throw new Error(`Gagal membuka Google Spreadsheet (${metaRes.status}): ${errText}`);
-  }
-
-  const meta = await metaRes.json();
-  const existingTitles: string[] = (meta.sheets || [])
-    .map((s: any) => s?.properties?.title)
-    .filter(Boolean);
-
-  const tabsToRead = ALL_TABS_CONFIG.filter((t) => existingTitles.includes(t.title));
-  if (tabsToRead.length === 0) {
-    return {};
-  }
-
-  const rangesQuery = tabsToRead
-    .map((t) => `ranges=${encodeURIComponent(`${t.title}!A2:Z2000`)}`)
-    .join('&');
-
-  const batchGetRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${rangesQuery}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
-
-  if (!batchGetRes.ok) {
-    const errText = await batchGetRes.text();
-    throw new Error(`Gagal membaca isi database Google Spreadsheet: ${errText}`);
-  }
-
-  const batchData = await batchGetRes.json();
-  const valueRanges: { range: string; values?: string[][] }[] = batchData.valueRanges || [];
-
-  const rowsByTab: Record<string, string[][]> = {};
-  tabsToRead.forEach((tab, idx) => {
-    rowsByTab[tab.title] = valueRanges[idx]?.values || [];
-  });
+/**
+ * Parses 2D row maps returned from Google Spreadsheet (via Cloud Bridge or Sheet export) into typed app entities.
+ */
+export function parseDatabaseFromTabs(
+  rowsByTab: Record<string, string[][]>,
+  includesHeaderRow: boolean = true
+): Partial<FullSpreadsheetDatabase> {
+  const stripHeader = (tabName: string): string[][] | undefined => {
+    const raw = rowsByTab[tabName];
+    if (!Array.isArray(raw)) return undefined;
+    if (!includesHeaderRow) return raw;
+    return raw.length > 0 ? raw.slice(1) : [];
+  };
 
   const result: Partial<FullSpreadsheetDatabase> = {};
 
-  if (rowsByTab[TAB_ASSETS]) {
-    result.assets = parseAssetsRows(rowsByTab[TAB_ASSETS]);
+  const assetsRows = stripHeader(TAB_ASSETS);
+  if (assetsRows) {
+    result.assets = parseAssetsRows(assetsRows);
   }
 
-  if (rowsByTab[TAB_TRANSACTIONS]) {
-    result.transactions = rowsByTab[TAB_TRANSACTIONS]
+  const trxRows = stripHeader(TAB_TRANSACTIONS);
+  if (trxRows) {
+    result.transactions = trxRows
       .filter((r) => r[0])
       .map((r) => ({
-        id: r[0] || '',
-        assetId: r[1] || '',
-        assetName: r[2] || '',
+        id: String(r[0] ?? ''),
+        assetId: String(r[1] ?? ''),
+        assetName: String(r[2] ?? ''),
         type: (r[3] as AssetTransaction['type']) || 'PEMINJAMAN',
         quantity: Number(r[4]) || 1,
-        staffName: r[5] || '',
-        staffEmail: r[6] || '',
-        department: r[7] || '',
-        date: r[8] || '',
-        expectedReturnDate: r[9] && r[9] !== '-' ? r[9] : undefined,
+        staffName: String(r[5] ?? ''),
+        staffEmail: String(r[6] ?? ''),
+        department: String(r[7] ?? ''),
+        date: String(r[8] ?? ''),
+        expectedReturnDate: r[9] && r[9] !== '-' ? String(r[9]) : undefined,
         conditionBefore: (r[10] as AssetCondition) || 'Baik',
         conditionAfter: (r[11] as AssetCondition) || 'Baik',
         photoDriveUrl: normalizeDriveImageUrl(r[12]) || undefined,
-        photoDriveFileId: r[13] || undefined,
-        photoDriveFolderName: r[14] || undefined,
-        notes: r[15] || '',
+        photoDriveFileId: r[13] ? String(r[13]) : undefined,
+        photoDriveFolderName: r[14] ? String(r[14]) : undefined,
+        notes: String(r[15] ?? ''),
         emailNotificationSent: r[16] === 'Terkirim',
-        emailRecipient: r[17] || '',
-        locationBefore: r[18] || undefined,
-        locationAfter: r[19] || undefined,
-        actualReturnDate: r[20] || undefined,
+        emailRecipient: String(r[17] ?? ''),
+        locationBefore: r[18] ? String(r[18]) : undefined,
+        locationAfter: r[19] ? String(r[19]) : undefined,
+        actualReturnDate: r[20] ? String(r[20]) : undefined,
         signatureDataUrl: normalizeDriveImageUrl(r[21]) || undefined,
       }));
   }
 
-  if (rowsByTab[TAB_MAINTENANCE]) {
-    result.maintenanceRecords = rowsByTab[TAB_MAINTENANCE]
+  const mtcRows = stripHeader(TAB_MAINTENANCE);
+  if (mtcRows) {
+    result.maintenanceRecords = mtcRows
       .filter((r) => r[0])
       .map((r) => ({
-        id: r[0] || '',
-        assetId: r[1] || '',
-        assetName: r[2] || '',
+        id: String(r[0] ?? ''),
+        assetId: String(r[1] ?? ''),
+        assetName: String(r[2] ?? ''),
         serviceType: (r[3] as MaintenanceType) || 'Rutin Berkala',
-        scheduledDate: r[4] || '',
-        completedDate: r[5] || undefined,
-        vendorOrTechnician: r[6] || '',
+        scheduledDate: String(r[4] ?? ''),
+        completedDate: r[5] ? String(r[5]) : undefined,
+        vendorOrTechnician: String(r[6] ?? ''),
         estimatedCost: Number(r[7]) || 0,
         actualCost: r[8] ? Number(r[8]) : undefined,
         status: (r[9] as MaintenanceStatus) || 'Terjadwal',
-        notes: r[10] || '',
+        notes: String(r[10] ?? ''),
         driveInvoiceUrl: normalizeDriveImageUrl(r[11]) || undefined,
-        createdAt: r[12] || new Date().toISOString(),
+        createdAt: String(r[12] ?? '') || new Date().toISOString(),
       }));
   }
 
-  if (rowsByTab[TAB_OPNAME]) {
-    result.stockOpnameSessions = rowsByTab[TAB_OPNAME]
+  const opnameRows = stripHeader(TAB_OPNAME);
+  if (opnameRows) {
+    result.stockOpnameSessions = opnameRows
       .filter((r) => r[0])
       .map((r) => {
         let items = [];
@@ -929,89 +558,95 @@ export async function loadFullDatabaseFromSpreadsheet(
           if (r[14]) items = JSON.parse(r[14]);
         } catch {}
         return {
-          id: r[0] || '',
-          title: r[1] || '',
-          divisionCode: r[2] || undefined,
-          divisionName: r[3] || undefined,
-          location: r[4] || '',
-          scheduledDate: r[5] || '',
+          id: String(r[0] ?? ''),
+          title: String(r[1] ?? ''),
+          divisionCode: r[2] ? String(r[2]) : undefined,
+          divisionName: r[3] ? String(r[3]) : undefined,
+          location: String(r[4] ?? ''),
+          scheduledDate: String(r[5] ?? ''),
           status: (r[6] as StockOpnameSession['status']) || 'DRAF',
-          auditorName: r[7] || '',
-          notes: r[8] || '',
+          auditorName: String(r[7] ?? ''),
+          notes: String(r[8] ?? ''),
           totalExpectedAssets: Number(r[9]) || 0,
           verifiedCount: Number(r[10]) || 0,
           discrepancyCount: Number(r[11]) || 0,
-          completedAt: r[12] || undefined,
-          createdAt: r[13] || new Date().toISOString(),
+          completedAt: r[12] ? String(r[12]) : undefined,
+          createdAt: String(r[13] ?? '') || new Date().toISOString(),
           items: Array.isArray(items) ? items : [],
         };
       });
   }
 
-  if (rowsByTab[TAB_DISPOSAL]) {
-    result.disposalRecords = rowsByTab[TAB_DISPOSAL]
+  const disposalRows = stripHeader(TAB_DISPOSAL);
+  if (disposalRows) {
+    result.disposalRecords = disposalRows
       .filter((r) => r[0])
       .map((r) => ({
-        id: r[0] || '',
-        documentNumber: r[1] || '',
-        assetId: r[2] || '',
-        assetName: r[3] || '',
-        category: r[4] || '',
+        id: String(r[0] ?? ''),
+        documentNumber: String(r[1] ?? ''),
+        assetId: String(r[2] ?? ''),
+        assetName: String(r[3] ?? ''),
+        category: String(r[4] ?? ''),
         disposalType: (r[5] as DisposalType) || 'AFKIR_RUSAK_BERAT',
-        requestDate: r[6] || '',
+        requestDate: String(r[6] ?? ''),
         salvageRecoveryAmount: Number(r[7]) || 0,
         bookValueAtDisposal: Number(r[8]) || 0,
         originalPrice: Number(r[9]) || 0,
-        reason: r[10] || '',
+        reason: String(r[10] ?? ''),
         status: (r[11] as DisposalRecord['status']) || 'DIAJUKAN',
-        picApprover: r[12] || '',
-        witnessName: r[13] || undefined,
-        createdAt: r[14] || new Date().toISOString(),
+        picApprover: String(r[12] ?? ''),
+        witnessName: r[13] ? String(r[13]) : undefined,
+        createdAt: String(r[14] ?? '') || new Date().toISOString(),
       }));
   }
 
-  if (rowsByTab[TAB_LOCATIONS]) {
-    result.locations = rowsByTab[TAB_LOCATIONS]
+  const locRows = stripHeader(TAB_LOCATIONS);
+  if (locRows) {
+    result.locations = locRows
       .filter((r) => r[0])
       .map((r) => ({
-        id: r[0] || '',
-        buildingName: r[1] || '',
-        floor: r[2] || '',
-        roomName: r[3] || '',
-        notes: r[4] || undefined,
+        id: String(r[0] ?? ''),
+        buildingName: String(r[1] ?? ''),
+        floor: String(r[2] ?? ''),
+        roomName: String(r[3] ?? ''),
+        notes: r[4] ? String(r[4]) : undefined,
       }));
   }
 
-  if (rowsByTab[TAB_VENDORS]) {
-    result.vendors = rowsByTab[TAB_VENDORS]
+  const vendorRows = stripHeader(TAB_VENDORS);
+  if (vendorRows) {
+    result.vendors = vendorRows
       .filter((r) => r[0])
       .map((r) => ({
-        id: r[0] || '',
-        name: r[1] || '',
-        serviceCategory: r[2] || '',
-        phone: r[3] || '',
-        email: r[4] || undefined,
-        address: r[5] || undefined,
-        picName: r[6] || '',
+        id: String(r[0] ?? ''),
+        name: String(r[1] ?? ''),
+        serviceCategory: String(r[2] ?? ''),
+        phone: String(r[3] ?? ''),
+        email: r[4] ? String(r[4]) : undefined,
+        address: r[5] ? String(r[5]) : undefined,
+        picName: String(r[6] ?? ''),
       }));
   }
 
-  if (rowsByTab[TAB_DIVISIONS] && rowsByTab[TAB_DIVISIONS].length > 0) {
-    result.customDivisions = rowsByTab[TAB_DIVISIONS]
+  const divRows = stripHeader(TAB_DIVISIONS);
+  if (divRows && divRows.length > 0) {
+    result.customDivisions = divRows
       .filter((r) => r[0] && r[1])
-      .map((r) => ({ code: r[0], name: r[1] }));
+      .map((r) => ({ code: String(r[0]), name: String(r[1]) }));
   }
 
-  if (rowsByTab[TAB_SUB_KELOMPOKS] && rowsByTab[TAB_SUB_KELOMPOKS].length > 0) {
-    result.customSubKelompoks = rowsByTab[TAB_SUB_KELOMPOKS]
+  const subRows = stripHeader(TAB_SUB_KELOMPOKS);
+  if (subRows && subRows.length > 0) {
+    result.customSubKelompoks = subRows
       .filter((r) => r[0] && r[1])
-      .map((r) => ({ code: r[0], name: r[1] }));
+      .map((r) => ({ code: String(r[0]), name: String(r[1]) }));
   }
 
-  if (rowsByTab[TAB_SETTINGS] && rowsByTab[TAB_SETTINGS].length > 0) {
+  const settingsRows = stripHeader(TAB_SETTINGS);
+  if (settingsRows && settingsRows.length > 0) {
     const map: Record<string, string> = {};
-    rowsByTab[TAB_SETTINGS].forEach((r) => {
-      if (r[0]) map[r[0]] = r[1] || '';
+    settingsRows.forEach((r) => {
+      if (r[0]) map[String(r[0])] = String(r[1] ?? '');
     });
     if (map.companyName) {
       result.companySettings = {
@@ -1040,71 +675,10 @@ export async function loadFullDatabaseFromSpreadsheet(
     };
   }
 
-  if (rowsByTab[TAB_USERS]) {
-    result.users = parseUserRows(rowsByTab[TAB_USERS]);
+  const userRows = stripHeader(TAB_USERS);
+  if (userRows) {
+    result.users = parseUserRows(userRows);
   }
 
   return result;
-}
-
-export async function syncAssetsToSheet(
-  token: string,
-  spreadsheetId: string,
-  assets: OfficeAsset[]
-): Promise<void> {
-  await ensureDatabaseTabs(token, spreadsheetId);
-
-  await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-      `${TAB_ASSETS}!A:Z`
-    )}:clear`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    }
-  );
-
-  const rows = [ASSET_HEADERS, ...assets.map(assetToRow)];
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    `${TAB_ASSETS}!A1`
-  )}?valueInputOption=USER_ENTERED`;
-
-  const res = await fetch(url, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      range: `${TAB_ASSETS}!A1`,
-      majorDimension: 'ROWS',
-      values: rows,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Gagal sinkronisasi data aset ke Google Sheets: ${err}`);
-  }
-}
-
-export async function fetchAssetsFromSheet(
-  token: string,
-  spreadsheetId: string
-): Promise<OfficeAsset[]> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    `${TAB_ASSETS}!A2:Z2000`
-  )}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error('Gagal membaca data aset dari Google Sheets');
-  }
-
-  const data = await res.json();
-  return parseAssetsRows(data.values || []);
 }

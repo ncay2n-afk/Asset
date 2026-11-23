@@ -26,7 +26,8 @@ interface TransactionHistoryProps {
   onViewPhoto: (photoUrl: string, title: string) => void;
   onOpenBast: (trx: AssetTransaction) => void;
   onQuickReturn: (trx: AssetTransaction) => void;
-  token: string | null;
+  cloudBridgeUrl?: string | null;
+  cloudBridgeKey?: string;
 }
 
 export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
@@ -35,7 +36,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   onViewPhoto,
   onOpenBast,
   onQuickReturn,
-  token,
+  cloudBridgeUrl,
+  cloudBridgeKey,
 }) => {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
@@ -108,7 +110,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
         assets={assets}
         onQuickReturn={onQuickReturn}
         onOpenBast={onOpenBast}
-        token={token}
+        cloudBridgeUrl={cloudBridgeUrl}
+        cloudBridgeKey={cloudBridgeKey}
       />
 
       {/* Audit Log Header & Search Filters */}

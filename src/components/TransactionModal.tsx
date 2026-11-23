@@ -25,15 +25,20 @@ import {
   WorkspaceConfig,
   MasterBuildingLocation
 } from '../types';
-import { uploadConditionPhotoToDrive, compressImageFileToDataUrl } from '../services/driveService';
-import { sendGmailMessage, buildAssetStatusEmailTemplate } from '../services/gmailService';
+import { compressImageFileToDataUrl } from '../services/driveService';
+import { buildAssetStatusEmailTemplate } from '../services/gmailService';
+import {
+  uploadConditionPhotoViaBridge,
+  sendEmailViaBridge,
+} from '../services/cloudBridgeService';
 
 interface TransactionModalProps {
   isOpen: boolean;
   onClose: () => void;
   selectedAsset: OfficeAsset | null;
   allAssets: OfficeAsset[];
-  token: string | null;
+  cloudBridgeUrl?: string | null;
+  cloudBridgeKey?: string;
   currentUserEmail: string | null;
   workspaceConfig: WorkspaceConfig;
   onTransactionSuccess: (
@@ -48,9 +53,10 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   onClose,
   selectedAsset,
   allAssets,
-  token,
+  cloudBridgeUrl,
+  cloudBridgeKey,
   currentUserEmail,
-  workspaceConfig,
+  workspaceConfig: _workspaceConfig,
   onTransactionSuccess,
   registeredLocations = [],
 }) => {
@@ -174,25 +180,26 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       let uploadedFileId = '';
       let driveFolderPath = `AsetKantor_Dokumentasi_Foto / ${currentAsset.id} / ${dateOnly}`;
 
-      // 1. Upload photo to Google Drive if photo is provided and token exists
+      // 1. Upload photo to Google Drive via Cloud Bridge if connected
       if (photoFile) {
         setSubmitStep('Mengunggah bukti foto kondisi ke Google Drive...');
         const fileName = `KONDISI_${currentAsset.id}_${dateOnly}_${trxId}.jpg`;
 
-        if (token) {
+        if (cloudBridgeUrl) {
           try {
-            const driveResult = await uploadConditionPhotoToDrive(
-              token,
+            const driveResult = await uploadConditionPhotoViaBridge(
+              cloudBridgeUrl,
               photoFile,
               fileName,
               currentAsset.id,
-              dateOnly
+              dateOnly,
+              cloudBridgeKey
             );
             uploadedPhotoUrl = driveResult.imageUrl;
             uploadedFileId = driveResult.fileId;
             driveFolderPath = driveResult.folderPath;
           } catch (driveErr: any) {
-            console.warn('Gagal upload ke Drive API, gunakan fallback terkompresi:', driveErr);
+            console.warn('Gagal upload ke Drive via Bridge, gunakan fallback terkompresi:', driveErr);
             uploadedPhotoUrl = await compressImageFileToDataUrl(photoFile, 480, 0.7).catch(() => '');
           }
         } else {
@@ -279,21 +286,23 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         emailRecipient: emailRecipient || staffEmail || (currentUserEmail || ''),
       };
 
-      // 3. Send Email Notification via Gmail API if enabled
-      if (sendEmail && emailRecipient) {
-        setSubmitStep('Mengirim notifikasi email status via Gmail...');
+      // 3. Send Email Notification via Cloud Bridge MailApp if connected
+      if (sendEmail && emailRecipient && cloudBridgeUrl) {
+        setSubmitStep('Mengirim notifikasi email status...');
         try {
-          if (token) {
-            const { subject, html } = buildAssetStatusEmailTemplate(updatedAsset, newTransaction);
-            await sendGmailMessage(token, {
+          const { subject, html } = buildAssetStatusEmailTemplate(updatedAsset, newTransaction);
+          await sendEmailViaBridge(
+            cloudBridgeUrl,
+            {
               to: emailRecipient,
               subject,
               htmlBody: html,
-            });
-            newTransaction.emailNotificationSent = true;
-          }
+            },
+            cloudBridgeKey
+          );
+          newTransaction.emailNotificationSent = true;
         } catch (emailErr: any) {
-          console.warn('Gagal kirim Gmail (tetap lanjut menyimpan transaksi):', emailErr);
+          console.warn('Gagal kirim email via Bridge (tetap lanjut menyimpan transaksi):', emailErr);
         }
       }
 

@@ -1,6 +1,6 @@
 # Panduan Lengkap Deploy ke GitHub Pages (Hosting GitHub)
 
-Aplikasi **AsetKantor Enterprise** kini telah dikonfigurasi untuk hosting otomatis menggunakan **GitHub Pages**.
+Aplikasi **AsetKantor Enterprise** kini telah dikonfigurasi untuk hosting otomatis menggunakan **GitHub Pages** dan beroperasi **100% tanpa login akun Google** melalui **Google Apps Script Cloud Bridge**.
 
 Workflow GitHub Actions resmi telah disiapkan di `.github/workflows/deploy.yml` dan `vite.config.ts` telah diatur dengan `base: './'` agar semua file CSS, JS, dan gambar otomatis terbaca di domain GitHub Anda.
 
@@ -11,7 +11,7 @@ Workflow GitHub Actions resmi telah disiapkan di `.github/workflows/deploy.yml` 
 1. Buka terminal proyek Anda dan lakukan inisialisasi / commit:
    ```bash
    git add .
-   git commit -m "feat: setup github pages workflow and clean navigation UI"
+   git commit -m "feat: spreadsheet cloud bridge without google login"
    ```
 
 2. Hubungkan ke repository GitHub Anda (jika belum):
@@ -37,16 +37,18 @@ Setelah 1-2 menit, URL website Anda akan aktif di:
 
 ---
 
-## Langkah 3: Konfigurasi Otorisasi Domain di Google Cloud Console (Tanpa Firebase)
+## Langkah 3: Hubungkan Google Spreadsheet Aktif Online ke Semua Device (Tanpa Login Google)
 
-Agar fitur **Koneksi Google Spreadsheet (Database Utama)**, **Google Drive (Semua Foto, Logo & TTD BAST)**, dan **Notifikasi Gmail** bekerja di domain GitHub Pages Anda:
+Agar seluruh HP, tablet, dan laptop dapat login memakai akun di tab **`Master_Pengguna`** Google Spreadsheet, membaca/mengupdate 11 tab database, serta menyimpan semua gambar ke **Google Drive** tanpa login Google:
 
-1. Buka [Google Cloud Console Credentials](https://console.cloud.google.com/apis/credentials):
-   * Aktifkan **Google Sheets API**, **Google Drive API**, dan **Gmail API**.
-   * Pilih (atau buat) **OAuth 2.0 Client ID** bertipe *Web application*.
-   * Di bagian **Authorized JavaScript origins**, tambahkan:
-     * `https://USERNAME.github.io`
-   * Klik **Save**.
-2. Jika Anda membuat OAuth Client ID sendiri di akun Google Cloud Anda, masukkan Client ID tersebut di menu **Google Workspace -> Google OAuth Client ID** di dalam aplikasi (atau atur variabel `VITE_GOOGLE_OAUTH_CLIENT_ID`).
-3. Pada menu **OAuth consent screen**, pastikan status aplikasi sudah **Published** atau tambahkan email akun yang digunakan ke daftar **Test users**.
-
+1. Buka file **Google Spreadsheet** yang ingin dijadikan database utama.
+2. Klik menu **Ekstensi (Extensions) &rarr; Apps Script**.
+3. Di dalam aplikasi AsetKantor, klik tombol **Panduan & Code.gs** pada halaman Login atau tab **Database**, lalu klik **Salin Kode `Code.gs`**.
+4. Tempel seluruh kode tersebut ke `Code.gs` di Apps Script Editor (hapus kode bawaan) dan klik **Simpan**.
+5. Klik **Terapkan (Deploy) &rarr; Deployment baru &rarr; Jenis: Aplikasi web**:
+   * **Jalankan sebagai**: **Saya** (Pemilik Google Spreadsheet)
+   * **Yang memiliki akses**: **Siapa saja (Anyone)**
+   * Klik **Terapkan** lalu berikan izin akses Google Sheets, Drive, dan Email saat diminta.
+6. Salin URL Web App yang berakhiran `/exec`, tempel ke kolom **URL Web App Cloud Bridge** di aplikasi, lalu klik **Hubungkan & Muat User** (atau **Tes & Hubungkan Bridge**).
+7. Klik **Salin Link Device** (atau **Share Device**) untuk membagikan tautan siap pakai ke seluruh HP & laptop kantor agar otomatis terhubung ke Spreadsheet yang sama!
+8. _(Opsional untuk deploy build permanen)_ Anda juga dapat mengatur `VITE_CLOUD_BRIDGE_URL` (dan `VITE_CLOUD_BRIDGE_KEY` jika memakai kunci akses) di GitHub Repository Variables/Secrets sebelum build agar URL Bridge tertanam permanen di website GitHub Pages Anda.

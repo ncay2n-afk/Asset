@@ -1,14 +1,16 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { X, Printer, FileText, CheckCircle2, Eraser, PenTool, ExternalLink, Loader2 } from 'lucide-react';
 import { AssetTransaction, OfficeAsset, MasterCompanySettings } from '../types';
-import { uploadAssetFileToDrive, canvasToPngBlob, normalizeDriveImageUrl, getDriveOpenLink } from '../services/driveService';
+import { canvasToPngBlob, normalizeDriveImageUrl, getDriveOpenLink } from '../services/driveService';
+import { uploadImageViaBridge } from '../services/cloudBridgeService';
 
 interface BastModalProps {
   isOpen: boolean;
   onClose: () => void;
   transaction: AssetTransaction | null;
   asset: OfficeAsset | null;
-  token?: string | null;
+  cloudBridgeUrl?: string | null;
+  cloudBridgeKey?: string;
   onSaveSignature?: (trxId: string, signatureUrl: string) => void;
   companySettings?: MasterCompanySettings;
 }
@@ -18,7 +20,8 @@ export const BastModal: React.FC<BastModalProps> = ({
   onClose,
   transaction,
   asset,
-  token,
+  cloudBridgeUrl,
+  cloudBridgeKey,
   onSaveSignature,
   companySettings,
 }) => {
@@ -103,19 +106,20 @@ export const BastModal: React.FC<BastModalProps> = ({
     setIsUploadingSig(true);
     try {
       let finalUrl = canvasRef.current.toDataURL('image/png');
-      if (token) {
+      if (cloudBridgeUrl) {
         try {
           const blob = await canvasToPngBlob(canvasRef.current);
-          const driveRes = await uploadAssetFileToDrive(
-            token,
+          const driveRes = await uploadImageViaBridge(
+            cloudBridgeUrl,
             blob,
             `TTD_BAST_${transaction.id}_${Date.now().toString().slice(-4)}.png`,
             [transaction.assetId || 'BAST', 'BAST_Signatures'],
-            `Tanda tangan digital BAST ${transaction.id} oleh ${transaction.staffName}`
+            `Tanda tangan digital BAST ${transaction.id} oleh ${transaction.staffName}`,
+            cloudBridgeKey
           );
           finalUrl = driveRes.imageUrl;
         } catch (driveErr) {
-          console.warn('Gagal mengunggah tanda tangan BAST ke Google Drive, fallback lokal:', driveErr);
+          console.warn('Gagal mengunggah tanda tangan BAST ke Google Drive via Bridge, fallback lokal:', driveErr);
         }
       }
       if (onSaveSignature) {

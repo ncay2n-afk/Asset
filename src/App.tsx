@@ -5,11 +5,6 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  initAuth,
-  googleSignIn,
-  logout
-} from './services/auth';
-import {
   OfficeAsset,
   AssetTransaction,
   WorkspaceConfig,
@@ -20,8 +15,7 @@ import {
   MasterBuildingLocation,
   MasterVendor,
   MasterCompanySettings,
-  AppUserAccount,
-  GoogleUserProfile
+  AppUserAccount
 } from './types';
 import { INITIAL_COMPANY_SETTINGS } from './data/mockInitialData';
 import {
@@ -56,21 +50,33 @@ import { DepreciationCalculatorModal } from './components/DepreciationCalculator
 import { BatchLabelModal } from './components/BatchLabelModal';
 import { BatchImportModal } from './components/BatchImportModal';
 import { WarrantyAlertsBanner } from './components/WarrantyAlertsBanner';
-import { AuthDomainHelpModal } from './components/AuthDomainHelpModal';
+import { SpreadsheetBridgeHelpModal } from './components/SpreadsheetBridgeHelpModal';
 import { SpreadsheetLoginView } from './components/SpreadsheetLoginView';
 import {
   SpreadsheetConfirmModal,
   SpreadsheetConfirmAction
 } from './components/SpreadsheetConfirmModal';
+import { FullSpreadsheetDatabase } from './services/sheetsService';
 import {
-  findDatabaseSpreadsheet,
-  createDatabaseSpreadsheet,
-  saveFullDatabaseToSpreadsheet,
-  loadFullDatabaseFromSpreadsheet,
-  fetchUsersFromSpreadsheet,
-  FullSpreadsheetDatabase
-} from './services/sheetsService';
-import { CheckCircle2, AlertCircle, Monitor, Smartphone, Laptop, ShieldAlert } from 'lucide-react';
+  DEFAULT_CLOUD_BRIDGE_URL,
+  DEFAULT_CLOUD_BRIDGE_KEY,
+  extractSpreadsheetId,
+  isValidBridgeUrl,
+  pingCloudBridge,
+  fetchUsersViaBridge,
+  pullFullDatabaseViaBridge,
+  saveFullDatabaseViaBridge,
+  initDatabaseViaBridge,
+  fetchPublicSheetUsersFallback
+} from './services/cloudBridgeService';
+import {
+  CheckCircle2,
+  AlertCircle,
+  Monitor,
+  Smartphone,
+  Laptop,
+  ShieldAlert
+} from 'lucide-react';
 
 const LOCAL_STORAGE_ASSETS_KEY = 'aset_kantor_assets_v3';
 const LOCAL_STORAGE_TRX_KEY = 'aset_kantor_trx_v3';
@@ -85,8 +91,52 @@ const LOCAL_STORAGE_SUB_KEY = 'aset_kantor_sub_v3';
 const LOCAL_STORAGE_USERS_KEY = 'aset_kantor_users_v3';
 const LOCAL_STORAGE_CONFIG_KEY = 'aset_kantor_config_v3';
 const LOCAL_STORAGE_VIEW_MODE_KEY = 'aset_kantor_view_mode';
+const LOCAL_STORAGE_DIRTY_KEY = 'aset_kantor_dirty_count_v1';
 
 type ViewMode = 'auto' | 'web' | 'mobile';
+
+function loadInitialWorkspaceConfig(): WorkspaceConfig {
+  let savedConfig: Partial<WorkspaceConfig> = {};
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_CONFIG_KEY);
+    if (raw) savedConfig = JSON.parse(raw);
+  } catch {}
+
+  let urlBridge = '';
+  let urlSheet = '';
+  let urlKey = '';
+  try {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      urlBridge = params.get('bridge')?.trim() || '';
+      urlSheet = extractSpreadsheetId(params.get('sheet')) || '';
+      urlKey = params.get('key')?.trim() || '';
+    }
+  } catch {}
+
+  const effectiveSheetId = urlSheet || savedConfig.spreadsheetId || null;
+
+  return {
+    spreadsheetId: effectiveSheetId,
+    spreadsheetName: savedConfig.spreadsheetName || 'AsetKantor_Database_Inventaris',
+    spreadsheetUrl:
+      savedConfig.spreadsheetUrl ||
+      (effectiveSheetId
+        ? `https://docs.google.com/spreadsheets/d/${effectiveSheetId}/edit`
+        : null),
+    cloudBridgeUrl: urlBridge || savedConfig.cloudBridgeUrl || DEFAULT_CLOUD_BRIDGE_URL || '',
+    cloudBridgeKey: urlKey || savedConfig.cloudBridgeKey || DEFAULT_CLOUD_BRIDGE_KEY || '',
+    driveFolderId: savedConfig.driveFolderId || null,
+    driveFolderName: savedConfig.driveFolderName || 'AsetKantor_Dokumentasi_Foto',
+    notificationEmail: savedConfig.notificationEmail || '',
+    autoSendEmailOnLoan: savedConfig.autoSendEmailOnLoan ?? true,
+    autoSendEmailOnDamage: savedConfig.autoSendEmailOnDamage ?? true,
+    autoSendEmailOnLowStock: savedConfig.autoSendEmailOnLowStock ?? true,
+    lowStockThreshold: savedConfig.lowStockThreshold ?? 1,
+    autoSyncSpreadsheet: savedConfig.autoSyncSpreadsheet ?? false,
+    lastSyncedAt: savedConfig.lastSyncedAt,
+  };
+}
 
 export default function App() {
   // Navigation Tabs: 'assets' | 'transactions' | 'opname' | 'maintenance' | 'disposal' | 'reports' | 'settings' | 'workspace'
@@ -108,10 +158,7 @@ export default function App() {
   const isForcedMobilePreview = !isViewportMobile && viewMode === 'mobile';
   const effectiveIsMobile = viewMode === 'mobile' || (viewMode === 'auto' && isViewportMobile);
 
-  // Authentication State (Direct Google OAuth 2.0 + Spreadsheet App User Session in memory)
-  const [user, setUser] = useState<GoogleUserProfile | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  // Active Spreadsheet App User Session (in-memory only; zero Google OAuth)
   const [currentAppUser, setCurrentAppUser] = useState<AppUserAccount | null>(null);
   const [isSyncingUsers, setIsSyncingUsers] = useState(false);
 
@@ -124,7 +171,7 @@ export default function App() {
     }
   });
 
-  // Asset, Transaction, Maintenance, Stock Opname, and Disposal Data (Spreadsheet & Drive Primary DB)
+  // 11-Tab Database Entities
   const [assets, setAssets] = useState<OfficeAsset[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_ASSETS_KEY);
@@ -170,7 +217,6 @@ export default function App() {
     }
   });
 
-  // Master Data: Building Locations, Vendors, Company Settings, Custom Divisions, and Sub Kelompoks
   const [locations, setLocations] = useState<MasterBuildingLocation[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_LOC_KEY);
@@ -216,32 +262,35 @@ export default function App() {
     }
   });
 
-  // Google Workspace Configuration
-  const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_CONFIG_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return {
-      spreadsheetId: null,
-      spreadsheetName: 'AsetKantor_Database_Inventaris',
-      spreadsheetUrl: null,
-      driveFolderId: null,
-      driveFolderName: 'AsetKantor_Dokumentasi_Foto',
-      notificationEmail: '',
-      autoSendEmailOnLoan: true,
-      autoSendEmailOnDamage: true,
-      autoSendEmailOnLowStock: true,
-      lowStockThreshold: 1,
-    };
-  });
+  // Spreadsheet & Cloud Bridge Configuration
+  const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig>(
+    loadInitialWorkspaceConfig
+  );
 
-  // Sync state & Spreadsheet Database confirmation
+  // Dirty Change Tracking ("Update Database" button visibility)
+  const [unsavedChangesCount, setUnsavedChangesCount] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_DIRTY_KEY);
+      const parsed = raw ? parseInt(raw, 10) : 0;
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const hasUnsavedChanges = unsavedChangesCount > 0;
+  const hasMountedDirtyRef = useRef(false);
+  const skipNextDirtyMarkRef = useRef(false);
+
+  // Sync state & Confirmation modal
   const [isSyncing, setIsSyncing] = useState(false);
-  const [pendingSheetAction, setPendingSheetAction] = useState<SpreadsheetConfirmAction | null>(null);
+  const [pendingSheetAction, setPendingSheetAction] =
+    useState<SpreadsheetConfirmAction | null>(null);
   const skipNextAutoSyncRef = useRef(false);
   const hasAutoSyncMountedRef = useRef(false);
-  const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
+  const [toastMessage, setToastMessage] = useState<{
+    type: 'success' | 'info' | 'error';
+    text: string;
+  } | null>(null);
 
   // Filters
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string | null>(null);
@@ -253,129 +302,139 @@ export default function App() {
   const [isBatchLabelModalOpen, setIsBatchLabelModalOpen] = useState(false);
   const [isBatchImportModalOpen, setIsBatchImportModalOpen] = useState(false);
 
-  const [photoViewer, setPhotoViewer] = useState<{ isOpen: boolean; url: string | null; title: string }>({
+  const [photoViewer, setPhotoViewer] = useState<{
+    isOpen: boolean;
+    url: string | null;
+    title: string;
+  }>({
     isOpen: false,
     url: null,
     title: '',
   });
 
-  // Modals: Label/QR, Scanner, BAST, Depreciation, Edit Asset
+  // Modals: Label/QR, Scanner, Bridge Help, BAST, Depreciation, Edit Asset
   const [isLabelModalOpen, setIsLabelModalOpen] = useState(false);
   const [selectedAssetForLabel, setSelectedAssetForLabel] = useState<OfficeAsset | null>(null);
 
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
   const [initialScanQuery, setInitialScanQuery] = useState<string | null>(null);
-  const [authHelpModal, setAuthHelpModal] = useState<{ isOpen: boolean; code: string; message: string }>({
-    isOpen: false,
-    code: '',
-    message: '',
-  });
+  const [isBridgeHelpOpen, setIsBridgeHelpOpen] = useState(false);
 
   const [isBastModalOpen, setIsBastModalOpen] = useState(false);
   const [selectedTrxForBast, setSelectedTrxForBast] = useState<AssetTransaction | null>(null);
 
   const [isDepreciationModalOpen, setIsDepreciationModalOpen] = useState(false);
-  const [selectedAssetForDepreciation, setSelectedAssetForDepreciation] = useState<OfficeAsset | null>(null);
+  const [selectedAssetForDepreciation, setSelectedAssetForDepreciation] =
+    useState<OfficeAsset | null>(null);
 
   const [isEditAssetModalOpen, setIsEditAssetModalOpen] = useState(false);
   const [selectedAssetForEdit, setSelectedAssetForEdit] = useState<OfficeAsset | null>(null);
+
+  const isBridgeConnected = isValidBridgeUrl(workspaceConfig.cloudBridgeUrl);
 
   // Persistence to LocalStorage
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_ASSETS_KEY, JSON.stringify(assets));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [assets]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_TRX_KEY, JSON.stringify(transactions));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [transactions]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_MTC_KEY, JSON.stringify(maintenanceRecords));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [maintenanceRecords]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_SO_KEY, JSON.stringify(stockOpnameSessions));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [stockOpnameSessions]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_DSP_KEY, JSON.stringify(disposalRecords));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [disposalRecords]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_LOC_KEY, JSON.stringify(locations));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [locations]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_VND_KEY, JSON.stringify(vendors));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [vendors]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_COMPANY_KEY, JSON.stringify(companySettings));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [companySettings]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_DIV_KEY, JSON.stringify(customDivisions));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [customDivisions]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_SUB_KEY, JSON.stringify(customSubKelompoks));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [customSubKelompoks]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_USERS_KEY, JSON.stringify(appUsers));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [appUsers]);
 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_CONFIG_KEY, JSON.stringify(workspaceConfig));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    } catch {}
   }, [workspaceConfig]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_DIRTY_KEY, String(unsavedChangesCount));
+    } catch {}
+  }, [unsavedChangesCount]);
+
+  // Dirty tracker for any edits to the 11 database entities
+  useEffect(() => {
+    if (!hasMountedDirtyRef.current) {
+      hasMountedDirtyRef.current = true;
+      return;
+    }
+    if (skipNextDirtyMarkRef.current) {
+      skipNextDirtyMarkRef.current = false;
+      return;
+    }
+    setUnsavedChangesCount((prev) => prev + 1);
+  }, [
+    assets,
+    transactions,
+    maintenanceRecords,
+    stockOpnameSessions,
+    disposalRecords,
+    locations,
+    vendors,
+    customDivisions,
+    customSubKelompoks,
+    companySettings,
+    appUsers,
+  ]);
 
   // Toast Auto-dismiss
   useEffect(() => {
@@ -398,36 +457,6 @@ export default function App() {
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  // Open scanned asset automatically if opened from QR link (?asset=...)
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const assetParam = params.get('asset');
-      if (assetParam) {
-        setInitialScanQuery(window.location.search);
-        setIsScanModalOpen(true);
-      }
-    } catch {}
-  }, []);
-
-  // Initialize Firebase Auth
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (currentUser, accessToken) => {
-        setUser(currentUser);
-        setToken(accessToken);
-        setIsAuthLoading(false);
-      },
-      () => {
-        setUser(null);
-        setToken(null);
-        setIsAuthLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
   }, []);
 
   // Build Full 11-Tab Database Payload
@@ -476,127 +505,280 @@ export default function App() {
     ]
   );
 
-  // Read-only fetch of Master_Pengguna from Google Spreadsheet
+  // Fetch active users from Master_Pengguna (Cloud Bridge primary, public sheet gviz fallback)
   const handleRefreshUsersFromSheet = useCallback(
-    async (overrideToken?: string, overrideSheetId?: string): Promise<AppUserAccount[]> => {
-      const tk = overrideToken || token;
-      const sid = overrideSheetId || workspaceConfig.spreadsheetId;
-      if (!tk || !sid) {
-        setToastMessage({
-          type: 'info',
-          text: 'Hubungkan akun Google dan tautkan ID Spreadsheet terlebih dahulu.',
-        });
+    async (
+      overrideBridgeUrl?: string,
+      overrideBridgeKey?: string,
+      overrideSheetId?: string | null,
+      silentIfUnconfigured: boolean = false
+    ): Promise<AppUserAccount[]> => {
+      const bUrl = (overrideBridgeUrl ?? workspaceConfig.cloudBridgeUrl ?? '').trim();
+      const bKey = (overrideBridgeKey ?? workspaceConfig.cloudBridgeKey ?? '').trim();
+      const sId = extractSpreadsheetId(overrideSheetId ?? workspaceConfig.spreadsheetId);
+
+      if (!isValidBridgeUrl(bUrl) && !sId) {
+        if (!silentIfUnconfigured) {
+          setToastMessage({
+            type: 'info',
+            text: 'Masukkan URL Web App Cloud Bridge atau ID Spreadsheet terlebih dahulu.',
+          });
+        }
         return [];
       }
 
       setIsSyncingUsers(true);
       try {
-        const loadedUsers = await fetchUsersFromSpreadsheet(tk, sid);
-        if (loadedUsers.length > 0) {
-          skipNextAutoSyncRef.current = true;
-          setAppUsers(loadedUsers);
+        if (isValidBridgeUrl(bUrl)) {
+          const res = await fetchUsersViaBridge(bUrl, bKey, sId);
+          if (res.spreadsheetId) {
+            setWorkspaceConfig((prev) => ({
+              ...prev,
+              spreadsheetId: res.spreadsheetId || prev.spreadsheetId,
+              spreadsheetName: res.spreadsheetName || prev.spreadsheetName,
+              spreadsheetUrl: res.spreadsheetUrl || prev.spreadsheetUrl,
+            }));
+          }
+          if (res.users.length > 0) {
+            skipNextAutoSyncRef.current = true;
+            skipNextDirtyMarkRef.current = true;
+            setAppUsers(res.users);
+            setToastMessage({
+              type: 'success',
+              text: `Berhasil memuat ${res.users.length} akun pengguna aktif dari tab Master_Pengguna.`,
+            });
+          } else if (!silentIfUnconfigured) {
+            setToastMessage({
+              type: 'info',
+              text: 'Bridge terhubung! Tab Master_Pengguna masih kosong — silakan buat akun Super Admin pertama.',
+            });
+          }
+          return res.users;
+        }
+
+        // Public Sheet fallback (read-only)
+        if (sId) {
+          const publicUsers = await fetchPublicSheetUsersFallback(sId);
+          if (publicUsers.length > 0) {
+            skipNextAutoSyncRef.current = true;
+            skipNextDirtyMarkRef.current = true;
+            setAppUsers(publicUsers);
+            setToastMessage({
+              type: 'success',
+              text: `Berhasil memuat ${publicUsers.length} akun pengguna dari Spreadsheet publik.`,
+            });
+          }
+          return publicUsers;
+        }
+
+        return [];
+      } catch (err: any) {
+        if (!silentIfUnconfigured) {
           setToastMessage({
-            type: 'success',
-            text: `Berhasil memuat ${loadedUsers.length} akun pengguna dari tab Master_Pengguna.`,
-          });
-        } else {
-          setToastMessage({
-            type: 'info',
-            text: 'Tab Master_Pengguna di Spreadsheet masih kosong.',
+            type: 'error',
+            text: err?.message || 'Gagal membaca daftar user dari Spreadsheet.',
           });
         }
-        return loadedUsers;
-      } catch (err: any) {
-        setToastMessage({
-          type: 'error',
-          text: err?.message || 'Gagal membaca daftar user dari Spreadsheet.',
-        });
         return [];
       } finally {
         setIsSyncingUsers(false);
       }
     },
-    [token, workspaceConfig.spreadsheetId]
+    [
+      workspaceConfig.cloudBridgeUrl,
+      workspaceConfig.cloudBridgeKey,
+      workspaceConfig.spreadsheetId,
+    ]
   );
 
-  // Sign In Handler (+ Direct Google OAuth, Auto-Discover Spreadsheet & Read Users)
-  const handleSignIn = async () => {
-    try {
-      const res = await googleSignIn(workspaceConfig.oauthClientId);
-      setUser(res.user);
-      setToken(res.accessToken);
-      setAuthHelpModal({ isOpen: false, code: '', message: '' });
+  // Pull full 11-tab DB quietly or interactively
+  const pullDatabaseInternal = useCallback(
+    async (
+      bridgeUrl: string,
+      bridgeKey?: string,
+      sheetId?: string | null,
+      showSuccessToast: boolean = true
+    ) => {
+      const loaded = await pullFullDatabaseViaBridge(bridgeUrl, bridgeKey, sheetId);
+      skipNextAutoSyncRef.current = true;
+      skipNextDirtyMarkRef.current = true;
 
-      let targetSheetId = workspaceConfig.spreadsheetId;
-
-      if (!targetSheetId && res.accessToken) {
-        try {
-          const found = await findDatabaseSpreadsheet(res.accessToken);
-          if (found) {
-            targetSheetId = found.spreadsheetId;
-            setWorkspaceConfig((prev) => ({
-              ...prev,
-              spreadsheetId: found.spreadsheetId,
-              spreadsheetUrl: found.spreadsheetUrl,
-              spreadsheetName: found.name,
-            }));
-            setPendingSheetAction('pull_full_db');
-          }
-        } catch (driveErr) {
-          console.warn('Auto-discover spreadsheet skipped:', driveErr);
-        }
+      if (loaded.assets) setAssets(loaded.assets);
+      if (loaded.transactions) setTransactions(loaded.transactions);
+      if (loaded.maintenanceRecords) setMaintenanceRecords(loaded.maintenanceRecords);
+      if (loaded.stockOpnameSessions) setStockOpnameSessions(loaded.stockOpnameSessions);
+      if (loaded.disposalRecords) setDisposalRecords(loaded.disposalRecords);
+      if (loaded.locations) setLocations(loaded.locations);
+      if (loaded.vendors) setVendors(loaded.vendors);
+      if (loaded.customDivisions) setCustomDivisions(loaded.customDivisions);
+      if (loaded.customSubKelompoks) setCustomSubKelompoks(loaded.customSubKelompoks);
+      if (loaded.companySettings) {
+        setCompanySettings((prev) => ({
+          ...prev,
+          ...loaded.companySettings,
+          logoUrl: loaded.companySettings?.logoUrl || prev.logoUrl,
+        }));
+      }
+      if (loaded.users && loaded.users.length > 0) {
+        setAppUsers(loaded.users);
       }
 
-      if (targetSheetId && res.accessToken) {
-        await handleRefreshUsersFromSheet(res.accessToken, targetSheetId);
-      } else {
+      setUnsavedChangesCount(0);
+      setWorkspaceConfig((prev) => ({
+        ...prev,
+        ...(loaded.workspaceSettings || {}),
+        spreadsheetId: loaded.spreadsheetId || prev.spreadsheetId,
+        spreadsheetName: loaded.spreadsheetName || prev.spreadsheetName,
+        spreadsheetUrl: loaded.spreadsheetUrl || prev.spreadsheetUrl,
+        lastSyncedAt: new Date().toISOString(),
+      }));
+
+      if (showSuccessToast) {
+        const assetCount = loaded.assets?.length ?? 0;
+        const trxCount = loaded.transactions?.length ?? 0;
         setToastMessage({
           type: 'success',
-          text: `Berhasil terhubung dengan Google Workspace (${res.user.email})`,
+          text: `Data terbaru dimuat dari Spreadsheet (${assetCount} aset, ${trxCount} riwayat mutasi).`,
         });
       }
-    } catch (err: any) {
-      const code = err?.code || 'auth/error';
-      const msg = err?.message || 'Gagal masuk dengan Google OAuth';
-      setToastMessage({
-        type: 'error',
-        text: msg,
-      });
+    },
+    []
+  );
 
-      if (
-        code === 'auth/unauthorized-domain' ||
-        code === 'auth/popup-blocked' ||
-        code === 'auth/access-denied' ||
-        code === 'auth/missing-token' ||
-        code === 'auth/gsi-load-timeout'
-      ) {
-        setAuthHelpModal({
-          isOpen: true,
-          code,
-          message: msg,
-        });
+  // Boot Effect: Handle QR URL param (?asset=...), strip Share URL params (?bridge=...&sheet=...&key=...), and fetch Master_Pengguna
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const assetParam = params.get('asset');
+      if (assetParam) {
+        setInitialScanQuery(window.location.search);
+        setIsScanModalOpen(true);
       }
+
+      const hasShareParams = params.has('bridge') || params.has('sheet') || params.has('key');
+      if (hasShareParams) {
+        params.delete('bridge');
+        params.delete('sheet');
+        params.delete('key');
+        const nextSearch = params.toString();
+        const nextUrl =
+          window.location.pathname +
+          (nextSearch ? `?${nextSearch}` : '') +
+          window.location.hash;
+        window.history.replaceState({}, '', nextUrl);
+      }
+    } catch {}
+
+    // Auto-pull users on startup so any device opening the link sees active Spreadsheet accounts
+    if (isValidBridgeUrl(workspaceConfig.cloudBridgeUrl) || workspaceConfig.spreadsheetId) {
+      void handleRefreshUsersFromSheet(
+        workspaceConfig.cloudBridgeUrl,
+        workspaceConfig.cloudBridgeKey,
+        workspaceConfig.spreadsheetId,
+        true
+      );
     }
-  };
+    // Run only once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // App User Session Handlers (Spreadsheet-backed Login)
-  const handleAppLoginSuccess = (account: AppUserAccount) => {
-    skipNextAutoSyncRef.current = false;
+  // Connect & Test Cloud Bridge Handler
+  const handleConnectBridge = useCallback(
+    async (bridgeUrlInput: string, bridgeKeyInput?: string, sheetIdInput?: string | null) => {
+      const cleanUrl = bridgeUrlInput.trim();
+      const cleanKey = (bridgeKeyInput || '').trim();
+      const cleanSheetId = extractSpreadsheetId(sheetIdInput);
+
+      if (cleanUrl && !isValidBridgeUrl(cleanUrl)) {
+        throw new Error(
+          'URL Cloud Bridge harus diawali https://script.google.com/macros/s/...'
+        );
+      }
+
+      setWorkspaceConfig((prev) => ({
+        ...prev,
+        cloudBridgeUrl: cleanUrl || prev.cloudBridgeUrl,
+        cloudBridgeKey: cleanKey || undefined,
+        ...(cleanSheetId
+          ? {
+              spreadsheetId: cleanSheetId,
+              spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanSheetId}/edit`,
+            }
+          : {}),
+      }));
+
+      if (cleanUrl) {
+        const ping = await pingCloudBridge(
+          cleanUrl,
+          cleanKey,
+          cleanSheetId || workspaceConfig.spreadsheetId
+        );
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          cloudBridgeUrl: cleanUrl,
+          cloudBridgeKey: cleanKey || undefined,
+          spreadsheetId: ping.spreadsheetId || prev.spreadsheetId,
+          spreadsheetName: ping.spreadsheetName || prev.spreadsheetName,
+          spreadsheetUrl: ping.spreadsheetUrl || prev.spreadsheetUrl,
+        }));
+        await handleRefreshUsersFromSheet(
+          cleanUrl,
+          cleanKey,
+          ping.spreadsheetId || cleanSheetId,
+          false
+        );
+      } else if (cleanSheetId) {
+        await handleRefreshUsersFromSheet('', '', cleanSheetId, false);
+      }
+    },
+    [workspaceConfig.spreadsheetId, handleRefreshUsersFromSheet]
+  );
+
+  // App User Session Handlers (Spreadsheet-backed Login; zero Google OAuth)
+  const handleAppLoginSuccess = async (account: AppUserAccount) => {
+    skipNextAutoSyncRef.current = true;
+    skipNextDirtyMarkRef.current = true;
     setAppUsers((prev) =>
-      prev.map((u) => (u.id === account.id ? { ...u, lastLoginAt: account.lastLoginAt } : u))
+      prev.map((u) =>
+        u.id === account.id ? { ...u, lastLoginAt: account.lastLoginAt } : u
+      )
     );
     setCurrentAppUser(account);
     setToastMessage({
       type: 'success',
       text: `Selamat datang, ${account.fullName} (${account.role.replace('_', ' ')})!`,
     });
+
+    // Automatically pull live 11-tab DB on login if connected & no pending local edits
+    if (isValidBridgeUrl(workspaceConfig.cloudBridgeUrl) && !hasUnsavedChanges) {
+      try {
+        setIsSyncing(true);
+        await pullDatabaseInternal(
+          workspaceConfig.cloudBridgeUrl!,
+          workspaceConfig.cloudBridgeKey,
+          workspaceConfig.spreadsheetId,
+          false
+        );
+        // Keep fresh login timestamp in memory
+        skipNextDirtyMarkRef.current = true;
+        setAppUsers((prev) =>
+          prev.map((u) =>
+            u.id === account.id ? { ...u, lastLoginAt: account.lastLoginAt } : u
+          )
+        );
+      } catch (err) {
+        console.warn('Sinkronisasi otomatis saat login dilewati:', err);
+      } finally {
+        setIsSyncing(false);
+      }
+    }
   };
 
   const handleActivateInvitedUser = (account: AppUserAccount) => {
     setAppUsers((prev) => prev.map((u) => (u.id === account.id ? account : u)));
     setCurrentAppUser(account);
-    if (token && workspaceConfig.spreadsheetId && !workspaceConfig.autoSyncSpreadsheet) {
-      setPendingSheetAction('push_full_db');
+    if (isBridgeConnected && !workspaceConfig.autoSyncSpreadsheet) {
+      setPendingSheetAction('update_db');
     }
     setToastMessage({
       type: 'success',
@@ -607,8 +789,8 @@ export default function App() {
   const handleFirstSuperAdminCreated = (account: AppUserAccount) => {
     setAppUsers([account]);
     setCurrentAppUser(account);
-    if (token && !workspaceConfig.autoSyncSpreadsheet) {
-      setPendingSheetAction(workspaceConfig.spreadsheetId ? 'push_full_db' : 'create_db');
+    if (isBridgeConnected && !workspaceConfig.autoSyncSpreadsheet) {
+      setPendingSheetAction('init_db');
     }
     setToastMessage({
       type: 'success',
@@ -625,191 +807,122 @@ export default function App() {
     });
   };
 
-  // Sign Out Handler
-  const handleSignOut = async () => {
-    try {
-      await logout();
-      setUser(null);
-      setToken(null);
-      setToastMessage({
-        type: 'info',
-        text: 'Sesi Google telah diputus.',
-      });
-    } catch (err: any) {
-      console.error(err);
-    }
-  };
-
-  // Find Existing Spreadsheet on Drive
-  const handleFindExistingSpreadsheet = useCallback(async () => {
-    if (!token) {
-      setToastMessage({
-        type: 'info',
-        text: 'Silakan hubungkan akun Google terlebih dahulu.',
-      });
-      return;
-    }
-
-    const found = await findDatabaseSpreadsheet(token);
-    if (!found) {
-      setToastMessage({
-        type: 'info',
-        text: 'Belum ditemukan file Spreadsheet AsetKantor_Database_Inventaris di Google Drive Anda. Klik "Buat Database Spreadsheet Baru" untuk membuatnya.',
-      });
-      return;
-    }
-
-    setWorkspaceConfig((prev) => ({
-      ...prev,
-      spreadsheetId: found.spreadsheetId,
-      spreadsheetUrl: found.spreadsheetUrl,
-      spreadsheetName: found.name,
-    }));
-    setPendingSheetAction('pull_full_db');
-  }, [token]);
-
-  // Execute Confirmed Spreadsheet Action (Create / Push / Pull / Enable Auto-Sync)
+  // Execute Confirmed Spreadsheet Action (Init / Update DB / Pull / Enable Auto-Sync)
   const executeConfirmedSpreadsheetAction = useCallback(async () => {
-    if (!token || !pendingSheetAction) return;
+    if (!pendingSheetAction) return;
+    if (!isValidBridgeUrl(workspaceConfig.cloudBridgeUrl)) {
+      setPendingSheetAction(null);
+      setCurrentTab('workspace');
+      setIsBridgeHelpOpen(true);
+      setToastMessage({
+        type: 'info',
+        text: 'Hubungkan URL Web App Cloud Bridge terlebih dahulu untuk Update Database ke Spreadsheet.',
+      });
+      return;
+    }
+
+    const bridgeUrl = workspaceConfig.cloudBridgeUrl!;
+    const bridgeKey = workspaceConfig.cloudBridgeKey;
+    const sheetId = workspaceConfig.spreadsheetId;
 
     setIsSyncing(true);
     try {
       const dbPayload = buildFullDatabasePayload();
 
-      if (pendingSheetAction === 'create_db') {
-        const dbTitle =
-          workspaceConfig.spreadsheetName ||
-          `AsetKantor_Database_Inventaris_${new Date().getFullYear()}`;
-        const created = await createDatabaseSpreadsheet(token, dbTitle);
-        await saveFullDatabaseToSpreadsheet(token, created.spreadsheetId, dbPayload);
-        const nowIso = new Date().toISOString();
-        skipNextAutoSyncRef.current = true;
-        setWorkspaceConfig((prev) => ({
-          ...prev,
-          spreadsheetId: created.spreadsheetId,
-          spreadsheetUrl: created.spreadsheetUrl,
-          spreadsheetName: dbTitle,
-          autoSyncSpreadsheet: true,
-          lastSyncedAt: nowIso,
-        }));
-        setToastMessage({
-          type: 'success',
-          text: `Database Google Spreadsheet "${dbTitle}" (11 tab) berhasil dibuat & mode Auto-Sync aktif!`,
-        });
-      } else if (pendingSheetAction === 'push_full_db') {
-        let targetId = workspaceConfig.spreadsheetId;
-        let targetUrl = workspaceConfig.spreadsheetUrl;
-        if (!targetId) {
-          const created = await createDatabaseSpreadsheet(token, 'AsetKantor_Database_Inventaris');
-          targetId = created.spreadsheetId;
-          targetUrl = created.spreadsheetUrl;
-        }
-        await saveFullDatabaseToSpreadsheet(token, targetId, dbPayload);
-        const nowIso = new Date().toISOString();
-        skipNextAutoSyncRef.current = true;
-        setWorkspaceConfig((prev) => ({
-          ...prev,
-          spreadsheetId: targetId,
-          spreadsheetUrl: targetUrl,
-          lastSyncedAt: nowIso,
-        }));
-        setToastMessage({
-          type: 'success',
-          text: 'Seluruh 11 tab database berhasil disimpan ke Google Spreadsheet!',
-        });
-      } else if (pendingSheetAction === 'enable_auto_sync') {
-        let targetId = workspaceConfig.spreadsheetId;
-        let targetUrl = workspaceConfig.spreadsheetUrl;
-        const dbTitle =
-          workspaceConfig.spreadsheetName ||
-          `AsetKantor_Database_Inventaris_${new Date().getFullYear()}`;
-        if (!targetId) {
-          const created = await createDatabaseSpreadsheet(token, dbTitle);
-          targetId = created.spreadsheetId;
-          targetUrl = created.spreadsheetUrl;
-        }
-        await saveFullDatabaseToSpreadsheet(token, targetId, dbPayload);
-        const nowIso = new Date().toISOString();
-        skipNextAutoSyncRef.current = true;
-        setWorkspaceConfig((prev) => ({
-          ...prev,
-          spreadsheetId: targetId,
-          spreadsheetUrl: targetUrl,
-          spreadsheetName: dbTitle,
-          autoSyncSpreadsheet: true,
-          lastSyncedAt: nowIso,
-        }));
-        setToastMessage({
-          type: 'success',
-          text: 'Google Spreadsheet resmi aktif sebagai database utama (Auto-Sync aktif)!',
-        });
-      } else if (pendingSheetAction === 'pull_full_db') {
-        if (!workspaceConfig.spreadsheetId) {
-          throw new Error('ID Google Spreadsheet belum ditautkan.');
-        }
-        const loaded = await loadFullDatabaseFromSpreadsheet(
-          token,
-          workspaceConfig.spreadsheetId
+      if (pendingSheetAction === 'init_db') {
+        const initRes = await initDatabaseViaBridge(bridgeUrl, bridgeKey, sheetId);
+        const saveRes = await saveFullDatabaseViaBridge(
+          bridgeUrl,
+          dbPayload,
+          bridgeKey,
+          initRes.spreadsheetId || sheetId
         );
         skipNextAutoSyncRef.current = true;
-        if (loaded.assets) setAssets(loaded.assets);
-        if (loaded.transactions) setTransactions(loaded.transactions);
-        if (loaded.maintenanceRecords) setMaintenanceRecords(loaded.maintenanceRecords);
-        if (loaded.stockOpnameSessions) setStockOpnameSessions(loaded.stockOpnameSessions);
-        if (loaded.disposalRecords) setDisposalRecords(loaded.disposalRecords);
-        if (loaded.locations) setLocations(loaded.locations);
-        if (loaded.vendors) setVendors(loaded.vendors);
-        if (loaded.customDivisions) setCustomDivisions(loaded.customDivisions);
-        if (loaded.customSubKelompoks) setCustomSubKelompoks(loaded.customSubKelompoks);
-        if (loaded.companySettings) {
-          setCompanySettings((prev) => ({
-            ...prev,
-            ...loaded.companySettings,
-            logoUrl: loaded.companySettings?.logoUrl || prev.logoUrl,
-          }));
-        }
-        if (loaded.users && loaded.users.length > 0) {
-          setAppUsers(loaded.users);
-        }
+        skipNextDirtyMarkRef.current = true;
+        setUnsavedChangesCount(0);
         setWorkspaceConfig((prev) => ({
           ...prev,
-          ...(loaded.workspaceSettings || {}),
-          autoSyncSpreadsheet: true,
-          lastSyncedAt: new Date().toISOString(),
+          spreadsheetId: saveRes.spreadsheetId || initRes.spreadsheetId || prev.spreadsheetId,
+          spreadsheetName: saveRes.spreadsheetName || initRes.spreadsheetName || prev.spreadsheetName,
+          spreadsheetUrl: saveRes.spreadsheetUrl || initRes.spreadsheetUrl || prev.spreadsheetUrl,
+          lastSyncedAt: saveRes.updatedAt || new Date().toISOString(),
         }));
-        const assetCount = loaded.assets?.length ?? 0;
-        const trxCount = loaded.transactions?.length ?? 0;
         setToastMessage({
           type: 'success',
-          text: `Berhasil memuat database dari Google Spreadsheet (${assetCount} aset, ${trxCount} riwayat mutasi) & mengaktifkan Auto-Sync!`,
+          text: `11 Tab Database "${saveRes.spreadsheetName || 'Spreadsheet'}" siap & semua data berhasil disimpan!`,
         });
+      } else if (pendingSheetAction === 'update_db') {
+        const saveRes = await saveFullDatabaseViaBridge(
+          bridgeUrl,
+          dbPayload,
+          bridgeKey,
+          sheetId
+        );
+        skipNextAutoSyncRef.current = true;
+        skipNextDirtyMarkRef.current = true;
+        setUnsavedChangesCount(0);
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          spreadsheetId: saveRes.spreadsheetId || prev.spreadsheetId,
+          spreadsheetName: saveRes.spreadsheetName || prev.spreadsheetName,
+          spreadsheetUrl: saveRes.spreadsheetUrl || prev.spreadsheetUrl,
+          lastSyncedAt: saveRes.updatedAt || new Date().toISOString(),
+        }));
+        setToastMessage({
+          type: 'success',
+          text: 'Database Spreadsheet (11 tab) berhasil diperbarui dan aktif untuk semua device!',
+        });
+      } else if (pendingSheetAction === 'enable_auto_sync') {
+        const saveRes = await saveFullDatabaseViaBridge(
+          bridgeUrl,
+          dbPayload,
+          bridgeKey,
+          sheetId
+        );
+        skipNextAutoSyncRef.current = true;
+        skipNextDirtyMarkRef.current = true;
+        setUnsavedChangesCount(0);
+        setWorkspaceConfig((prev) => ({
+          ...prev,
+          spreadsheetId: saveRes.spreadsheetId || prev.spreadsheetId,
+          spreadsheetName: saveRes.spreadsheetName || prev.spreadsheetName,
+          spreadsheetUrl: saveRes.spreadsheetUrl || prev.spreadsheetUrl,
+          autoSyncSpreadsheet: true,
+          lastSyncedAt: saveRes.updatedAt || new Date().toISOString(),
+        }));
+        setToastMessage({
+          type: 'success',
+          text: 'Mode Auto-Sync Bridge aktif! Semua perubahan otomatis memperbarui Google Spreadsheet.',
+        });
+      } else if (pendingSheetAction === 'pull_full_db') {
+        await pullDatabaseInternal(bridgeUrl, bridgeKey, sheetId, true);
       }
     } catch (err: any) {
       console.error(err);
       setToastMessage({
         type: 'error',
-        text: err?.message || 'Gagal memproses operasi Google Spreadsheet.',
+        text: err?.message || 'Gagal memproses sinkronisasi Google Spreadsheet.',
       });
     } finally {
       setIsSyncing(false);
       setPendingSheetAction(null);
     }
   }, [
-    token,
     pendingSheetAction,
-    buildFullDatabasePayload,
+    workspaceConfig.cloudBridgeUrl,
+    workspaceConfig.cloudBridgeKey,
     workspaceConfig.spreadsheetId,
-    workspaceConfig.spreadsheetUrl,
-    workspaceConfig.spreadsheetName,
+    buildFullDatabasePayload,
+    pullDatabaseInternal,
   ]);
 
-  // Debounced Real-Time Auto-Sync to 10-Tab Google Spreadsheet
+  // Debounced Real-Time Auto-Sync when user explicitly enables autoSyncSpreadsheet
   useEffect(() => {
     if (!hasAutoSyncMountedRef.current) {
       hasAutoSyncMountedRef.current = true;
       return;
     }
-    if (!token || !workspaceConfig.spreadsheetId || !workspaceConfig.autoSyncSpreadsheet) {
+    if (!isBridgeConnected || !workspaceConfig.autoSyncSpreadsheet) {
       return;
     }
     if (skipNextAutoSyncRef.current) {
@@ -817,56 +930,71 @@ export default function App() {
       return;
     }
 
-    const targetSheetId = workspaceConfig.spreadsheetId;
+    const bridgeUrl = workspaceConfig.cloudBridgeUrl!;
+    const bridgeKey = workspaceConfig.cloudBridgeKey;
+    const sheetId = workspaceConfig.spreadsheetId;
     const payload = buildFullDatabasePayload();
 
     const timer = setTimeout(async () => {
       try {
         setIsSyncing(true);
-        await saveFullDatabaseToSpreadsheet(token, targetSheetId, payload);
+        const saveRes = await saveFullDatabaseViaBridge(
+          bridgeUrl,
+          payload,
+          bridgeKey,
+          sheetId
+        );
+        skipNextDirtyMarkRef.current = true;
+        setUnsavedChangesCount(0);
         setWorkspaceConfig((prev) => ({
           ...prev,
-          lastSyncedAt: new Date().toISOString(),
+          spreadsheetId: saveRes.spreadsheetId || prev.spreadsheetId,
+          spreadsheetName: saveRes.spreadsheetName || prev.spreadsheetName,
+          spreadsheetUrl: saveRes.spreadsheetUrl || prev.spreadsheetUrl,
+          lastSyncedAt: saveRes.updatedAt || new Date().toISOString(),
         }));
       } catch (err) {
-        console.warn('Auto-sync Google Spreadsheet gagal:', err);
+        console.warn('Auto-sync Cloud Bridge gagal:', err);
       } finally {
         setIsSyncing(false);
       }
-    }, 1200);
+    }, 1500);
 
     return () => clearTimeout(timer);
   }, [
-    token,
+    isBridgeConnected,
+    workspaceConfig.cloudBridgeUrl,
+    workspaceConfig.cloudBridgeKey,
     workspaceConfig.spreadsheetId,
     workspaceConfig.autoSyncSpreadsheet,
     buildFullDatabasePayload,
   ]);
 
-  // Manual Sync Trigger (opens explicit confirmation modal)
-  const handleManualSync = useCallback(async () => {
-    if (!token) {
+  // Trigger Update Database Confirmation Modal (or guide user to Bridge setup if disconnected)
+  const handleUpdateDatabase = useCallback(() => {
+    if (!isBridgeConnected) {
       setCurrentTab('workspace');
       setToastMessage({
         type: 'info',
-        text: 'Silakan hubungkan akun Google untuk sinkronisasi Google Spreadsheet.',
+        text: 'Hubungkan URL Web App Cloud Bridge terlebih dahulu untuk Update Database ke Spreadsheet.',
       });
       return;
     }
-    setPendingSheetAction(workspaceConfig.spreadsheetId ? 'push_full_db' : 'create_db');
-  }, [token, workspaceConfig.spreadsheetId]);
+    setPendingSheetAction('update_db');
+  }, [isBridgeConnected]);
 
   // Pull Trigger (opens explicit confirmation modal)
-  const handlePullFromSheet = useCallback(async () => {
-    if (!token || !workspaceConfig.spreadsheetId) {
+  const handlePullFromSheet = useCallback(() => {
+    if (!isBridgeConnected) {
+      setCurrentTab('workspace');
       setToastMessage({
         type: 'info',
-        text: 'Hubungkan akun Google dan isi ID Spreadsheet terlebih dahulu.',
+        text: 'Hubungkan URL Web App Cloud Bridge terlebih dahulu.',
       });
       return;
     }
     setPendingSheetAction('pull_full_db');
-  }, [token, workspaceConfig.spreadsheetId]);
+  }, [isBridgeConnected]);
 
   // Transaction Success Handler
   const handleTransactionSuccess = (
@@ -880,7 +1008,7 @@ export default function App() {
 
     setToastMessage({
       type: 'success',
-      text: `Mutasi ${newTransaction.type} berhasil dicatat! Stok diperbarui, bukti foto tersimpan di Google Drive, dan notifikasi email terproses.`,
+      text: `Mutasi ${newTransaction.type} berhasil dicatat! Klik Update Database untuk menyimpan ke Spreadsheet.`,
     });
   };
 
@@ -889,40 +1017,36 @@ export default function App() {
     setAssets((prev) => [newAsset, ...prev]);
     setToastMessage({
       type: 'success',
-      text: `Aset baru "${newAsset.name}" (${newAsset.id}) berhasil didaftarkan ke inventaris kantor.`,
+      text: `Aset baru "${newAsset.name}" (${newAsset.id}) ditambahkan! Klik Update Database untuk simpan ke Spreadsheet.`,
     });
   };
 
   // Batch CSV Import Handler
   const handleBatchImport = (importedAssets: OfficeAsset[]) => {
-    const combined = [...importedAssets, ...assets];
-    setAssets(combined);
-
+    setAssets((prev) => [...importedAssets, ...prev]);
     setToastMessage({
       type: 'success',
-      text: `Berhasil mengimpor ${importedAssets.length} aset baru ke dalam inventaris kantor!`,
+      text: `Berhasil mengimpor ${importedAssets.length} aset baru! Klik Update Database untuk sinkronkan ke Spreadsheet.`,
     });
   };
 
   // Edit Asset Handler
   const handleSaveEditedAsset = (updatedAsset: OfficeAsset) => {
-    const updatedList = assets.map((a) => (a.id === updatedAsset.id ? updatedAsset : a));
-    setAssets(updatedList);
-
+    setAssets((prev) =>
+      prev.map((a) => (a.id === updatedAsset.id ? updatedAsset : a))
+    );
     setToastMessage({
       type: 'success',
-      text: `Perubahan data aset "${updatedAsset.name}" berhasil disimpan.`,
+      text: `Perubahan aset "${updatedAsset.name}" dicatat. Klik Update Database untuk memperbarui Spreadsheet.`,
     });
   };
 
   // Delete Asset Handler
   const handleDeleteAsset = (assetId: string) => {
-    const updatedList = assets.filter((a) => a.id !== assetId);
-    setAssets(updatedList);
-
+    setAssets((prev) => prev.filter((a) => a.id !== assetId));
     setToastMessage({
       type: 'info',
-      text: `Aset ${assetId} telah dihapus dari inventaris kantor.`,
+      text: `Aset ${assetId} dihapus secara lokal. Klik Update Database untuk memperbarui Spreadsheet.`,
     });
   };
 
@@ -944,24 +1068,24 @@ export default function App() {
   const handleReconcileAssets = (
     reconciledList: { assetId: string; condition: AssetCondition; location: string }[]
   ) => {
-    const updated = assets.map((a) => {
-      const match = reconciledList.find((r) => r.assetId === a.id);
-      if (match) {
-        return {
-          ...a,
-          condition: match.condition,
-          location: match.location,
-          updatedAt: new Date().toISOString(),
-        };
-      }
-      return a;
-    });
-
-    setAssets(updated);
+    setAssets((prev) =>
+      prev.map((a) => {
+        const match = reconciledList.find((r) => r.assetId === a.id);
+        if (match) {
+          return {
+            ...a,
+            condition: match.condition,
+            location: match.location,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return a;
+      })
+    );
 
     setToastMessage({
       type: 'success',
-      text: `Berhasil merekonsiliasi ${reconciledList.length} aset dengan fisik di lapangan!`,
+      text: `Berhasil merekonsiliasi ${reconciledList.length} aset! Klik Update Database untuk menyimpan ke Spreadsheet.`,
     });
   };
 
@@ -970,25 +1094,26 @@ export default function App() {
     setDisposalRecords((prev) => [record, ...prev]);
 
     if (removeAssetFromStock) {
-      const updated = assets.map((a) => {
-        if (a.id === record.assetId) {
-          return {
-            ...a,
-            status: 'Nonaktif / Dihapus' as const,
-            availableStock: 0,
-            borrowedStock: 0,
-            notes: `${a.notes} [DIHAPUS VIA BAPA: ${record.documentNumber} - ${record.reason}]`,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        return a;
-      });
-      setAssets(updated);
+      setAssets((prev) =>
+        prev.map((a) => {
+          if (a.id === record.assetId) {
+            return {
+              ...a,
+              status: 'Nonaktif / Dihapus' as const,
+              availableStock: 0,
+              borrowedStock: 0,
+              notes: `${a.notes} [DIHAPUS VIA BAPA: ${record.documentNumber} - ${record.reason}]`,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return a;
+        })
+      );
     }
 
     setToastMessage({
       type: 'success',
-      text: `Berita Acara Penghapusan Aset (${record.documentNumber}) berhasil diterbitkan!`,
+      text: `Berita Acara Penghapusan Aset (${record.documentNumber}) diterbitkan!`,
     });
   };
 
@@ -1049,13 +1174,18 @@ export default function App() {
   };
 
   const canManageMaster =
-    !currentAppUser || currentAppUser.role === 'SUPER_ADMIN' || currentAppUser.role === 'ADMIN';
+    !currentAppUser ||
+    currentAppUser.role === 'SUPER_ADMIN' ||
+    currentAppUser.role === 'ADMIN';
   const canMutateAssets = !currentAppUser || currentAppUser.role !== 'AUDITOR';
 
   // Modal Openers (with RBAC guards)
   const handleOpenAddAsset = () => {
     if (!canMutateAssets) {
-      setToastMessage({ type: 'info', text: 'Akun Auditor hanya memiliki akses lihat (Read-Only).' });
+      setToastMessage({
+        type: 'info',
+        text: 'Akun Auditor hanya memiliki akses lihat (Read-Only).',
+      });
       return;
     }
     setIsAddAssetModalOpen(true);
@@ -1063,7 +1193,10 @@ export default function App() {
 
   const handleOpenBatchImport = () => {
     if (!canMutateAssets) {
-      setToastMessage({ type: 'info', text: 'Akun Auditor tidak dapat mengimpor data.' });
+      setToastMessage({
+        type: 'info',
+        text: 'Akun Auditor tidak dapat mengimpor data.',
+      });
       return;
     }
     setIsBatchImportModalOpen(true);
@@ -1071,7 +1204,10 @@ export default function App() {
 
   const handleOpenTransactionForAsset = (asset?: OfficeAsset) => {
     if (!canMutateAssets) {
-      setToastMessage({ type: 'info', text: 'Akun Auditor tidak dapat mencatat mutasi aset.' });
+      setToastMessage({
+        type: 'info',
+        text: 'Akun Auditor tidak dapat mencatat mutasi aset.',
+      });
       return;
     }
     setSelectedAssetForTrx(asset || assets[0] || null);
@@ -1090,7 +1226,10 @@ export default function App() {
 
   const handleOpenEditForAsset = (asset: OfficeAsset) => {
     if (!canMutateAssets) {
-      setToastMessage({ type: 'info', text: 'Akun Auditor hanya memiliki akses lihat (Read-Only).' });
+      setToastMessage({
+        type: 'info',
+        text: 'Akun Auditor hanya memiliki akses lihat (Read-Only).',
+      });
       return;
     }
     setSelectedAssetForEdit(asset);
@@ -1104,7 +1243,10 @@ export default function App() {
 
   const handleQuickReturnFromTracker = (trx: AssetTransaction) => {
     if (!canMutateAssets) {
-      setToastMessage({ type: 'info', text: 'Akun Auditor tidak dapat mencatat pengembalian.' });
+      setToastMessage({
+        type: 'info',
+        text: 'Akun Auditor tidak dapat mencatat pengembalian.',
+      });
       return;
     }
     const targetAsset = assets.find((a) => a.id === trx.assetId) || assets[0];
@@ -1134,11 +1276,13 @@ export default function App() {
       <DashboardKPI
         assets={assets}
         transactions={transactions}
-        hasToken={!!token}
+        isBridgeConnected={isBridgeConnected}
+        hasUnsavedChanges={hasUnsavedChanges}
+        unsavedChangesCount={unsavedChangesCount}
+        isSyncing={isSyncing}
         spreadsheetUrl={workspaceConfig.spreadsheetUrl}
-        isSpreadsheetDbActive={Boolean(
-          token && workspaceConfig.spreadsheetId && workspaceConfig.autoSyncSpreadsheet
-        )}
+        onUpdateDatabase={handleUpdateDatabase}
+        onPullFromSheet={handlePullFromSheet}
         onOpenWorkspace={() => setCurrentTab('workspace')}
         onFilterStatus={(status) => {
           setSelectedStatusFilter(status);
@@ -1146,6 +1290,7 @@ export default function App() {
         }}
         selectedStatusFilter={selectedStatusFilter}
         isMobileLayout={isMobileLayout}
+        canMutateAssets={canMutateAssets}
       />
 
       {/* Tab 1: Inventaris Aset */}
@@ -1172,7 +1317,8 @@ export default function App() {
           onViewPhoto={handleViewPhoto}
           onOpenBast={handleOpenBastForTrx}
           onQuickReturn={handleQuickReturnFromTracker}
-          token={token}
+          cloudBridgeUrl={workspaceConfig.cloudBridgeUrl}
+          cloudBridgeKey={workspaceConfig.cloudBridgeKey}
         />
       )}
 
@@ -1196,15 +1342,18 @@ export default function App() {
           records={maintenanceRecords}
           onAddRecord={handleAddMaintenance}
           onCompleteRecord={handleCompleteMaintenance}
-          token={token}
-          currentUserEmail={user?.email || currentAppUser?.email || null}
+          cloudBridgeUrl={workspaceConfig.cloudBridgeUrl}
+          cloudBridgeKey={workspaceConfig.cloudBridgeKey}
+          currentUserEmail={
+            currentAppUser?.email || workspaceConfig.notificationEmail || null
+          }
           vendors={vendors}
         />
       )}
 
       {/* Tab 5: Penghapusan Aset Resmi (BAPA) */}
-      {currentTab === 'disposal' && (
-        canManageMaster ? (
+      {currentTab === 'disposal' &&
+        (canManageMaster ? (
           <DisposalView
             assets={assets}
             records={disposalRecords}
@@ -1214,11 +1363,14 @@ export default function App() {
         ) : (
           <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
             <ShieldAlert className="w-8 h-8 text-amber-500 mx-auto" />
-            <h4 className="text-sm font-bold text-slate-900">Akses Khusus Admin / Super Admin</h4>
-            <p className="text-xs text-slate-500">Halaman Penghapusan Aset (BAPA) hanya tersedia untuk peran Admin dan Super Admin.</p>
+            <h4 className="text-sm font-bold text-slate-900">
+              Akses Khusus Admin / Super Admin
+            </h4>
+            <p className="text-xs text-slate-500">
+              Halaman Penghapusan Aset (BAPA) hanya tersedia untuk peran Admin dan Super Admin.
+            </p>
           </div>
-        )
-      )}
+        ))}
 
       {/* Tab 6: Laporan & Analitik Real-Time */}
       {currentTab === 'reports' && (
@@ -1231,31 +1383,69 @@ export default function App() {
       )}
 
       {/* Tab 7: Master Data & Pengaturan Aplikasi */}
-      {currentTab === 'settings' && (
-        canManageMaster ? (
+      {currentTab === 'settings' &&
+        (canManageMaster ? (
           <MasterSettingsView
             locations={locations}
             onAddLocation={(newLoc) => setLocations((prev) => [newLoc, ...prev])}
-            onUpdateLocation={(updated) => setLocations((prev) => prev.map((l) => (l.id === updated.id ? updated : l)))}
-            onDeleteLocation={(id) => setLocations((prev) => prev.filter((l) => l.id !== id))}
-            onImportLocations={(newLocs) => setLocations((prev) => [...newLocs, ...prev])}
+            onUpdateLocation={(updated) =>
+              setLocations((prev) =>
+                prev.map((l) => (l.id === updated.id ? updated : l))
+              )
+            }
+            onDeleteLocation={(id) =>
+              setLocations((prev) => prev.filter((l) => l.id !== id))
+            }
+            onImportLocations={(newLocs) =>
+              setLocations((prev) => [...newLocs, ...prev])
+            }
             vendors={vendors}
             onAddVendor={(newVnd) => setVendors((prev) => [newVnd, ...prev])}
-            onUpdateVendor={(updated) => setVendors((prev) => prev.map((v) => (v.id === updated.id ? updated : v)))}
-            onDeleteVendor={(id) => setVendors((prev) => prev.filter((v) => v.id !== id))}
-            onImportVendors={(newVnds) => setVendors((prev) => [...newVnds, ...prev])}
+            onUpdateVendor={(updated) =>
+              setVendors((prev) =>
+                prev.map((v) => (v.id === updated.id ? updated : v))
+              )
+            }
+            onDeleteVendor={(id) =>
+              setVendors((prev) => prev.filter((v) => v.id !== id))
+            }
+            onImportVendors={(newVnds) =>
+              setVendors((prev) => [...newVnds, ...prev])
+            }
             companySettings={companySettings}
             onUpdateCompanySettings={(cfg) => setCompanySettings(cfg)}
             customDivisions={customDivisions}
-            onAddDivision={(div) => setCustomDivisions((prev) => [...prev, div])}
-            onUpdateDivision={(oldCode, updated) => setCustomDivisions((prev) => prev.map((d) => (d.code === oldCode ? updated : d)))}
-            onDeleteDivision={(code) => setCustomDivisions((prev) => prev.filter((d) => d.code !== code))}
-            onImportDivisions={(newDivs) => setCustomDivisions((prev) => [...newDivs, ...prev])}
+            onAddDivision={(div) =>
+              setCustomDivisions((prev) => [...prev, div])
+            }
+            onUpdateDivision={(oldCode, updated) =>
+              setCustomDivisions((prev) =>
+                prev.map((d) => (d.code === oldCode ? updated : d))
+              )
+            }
+            onDeleteDivision={(code) =>
+              setCustomDivisions((prev) => prev.filter((d) => d.code !== code))
+            }
+            onImportDivisions={(newDivs) =>
+              setCustomDivisions((prev) => [...newDivs, ...prev])
+            }
             customSubKelompoks={customSubKelompoks}
-            onAddSubKelompok={(sub) => setCustomSubKelompoks((prev) => [...prev, sub])}
-            onUpdateSubKelompok={(oldCode, updated) => setCustomSubKelompoks((prev) => prev.map((s) => (s.code === oldCode ? updated : s)))}
-            onDeleteSubKelompok={(code) => setCustomSubKelompoks((prev) => prev.filter((s) => s.code !== code))}
-            onImportSubKelompoks={(newSubs) => setCustomSubKelompoks((prev) => [...newSubs, ...prev])}
+            onAddSubKelompok={(sub) =>
+              setCustomSubKelompoks((prev) => [...prev, sub])
+            }
+            onUpdateSubKelompok={(oldCode, updated) =>
+              setCustomSubKelompoks((prev) =>
+                prev.map((s) => (s.code === oldCode ? updated : s))
+              )
+            }
+            onDeleteSubKelompok={(code) =>
+              setCustomSubKelompoks((prev) =>
+                prev.filter((s) => s.code !== code)
+              )
+            }
+            onImportSubKelompoks={(newSubs) =>
+              setCustomSubKelompoks((prev) => [...newSubs, ...prev])
+            }
             allData={{
               assets,
               transactions,
@@ -1266,70 +1456,87 @@ export default function App() {
             onRestoreAllData={(restored) => {
               if (restored.assets) setAssets(restored.assets);
               if (restored.transactions) setTransactions(restored.transactions);
-              if (restored.maintenanceRecords) setMaintenanceRecords(restored.maintenanceRecords);
-              if (restored.stockOpnameSessions) setStockOpnameSessions(restored.stockOpnameSessions);
-              if (restored.disposalRecords) setDisposalRecords(restored.disposalRecords);
+              if (restored.maintenanceRecords)
+                setMaintenanceRecords(restored.maintenanceRecords);
+              if (restored.stockOpnameSessions)
+                setStockOpnameSessions(restored.stockOpnameSessions);
+              if (restored.disposalRecords)
+                setDisposalRecords(restored.disposalRecords);
               if (restored.locations) setLocations(restored.locations);
               if (restored.vendors) setVendors(restored.vendors);
-              if (restored.companySettings) setCompanySettings(restored.companySettings);
-              if (restored.customDivisions) setCustomDivisions(restored.customDivisions);
-              if (restored.customSubKelompoks) setCustomSubKelompoks(restored.customSubKelompoks);
+              if (restored.companySettings)
+                setCompanySettings(restored.companySettings);
+              if (restored.customDivisions)
+                setCustomDivisions(restored.customDivisions);
+              if (restored.customSubKelompoks)
+                setCustomSubKelompoks(restored.customSubKelompoks);
               if (restored.appUsers) setAppUsers(restored.appUsers);
             }}
             appUsers={appUsers}
             currentAppUser={currentAppUser}
             onAddAppUser={(newUsr) => setAppUsers((prev) => [...prev, newUsr])}
             onUpdateAppUser={(updatedUsr) => {
-              setAppUsers((prev) => prev.map((u) => (u.id === updatedUsr.id ? updatedUsr : u)));
+              setAppUsers((prev) =>
+                prev.map((u) => (u.id === updatedUsr.id ? updatedUsr : u))
+              );
               if (currentAppUser?.id === updatedUsr.id) {
                 setCurrentAppUser(updatedUsr);
               }
             }}
-            onDeleteAppUser={(usrId) => setAppUsers((prev) => prev.filter((u) => u.id !== usrId))}
-            hasSpreadsheetToken={Boolean(token)}
+            onDeleteAppUser={(usrId) =>
+              setAppUsers((prev) => prev.filter((u) => u.id !== usrId))
+            }
+            isBridgeConnected={isBridgeConnected}
             hasSpreadsheetId={Boolean(workspaceConfig.spreadsheetId)}
+            hasUnsavedChanges={hasUnsavedChanges}
+            unsavedChangesCount={unsavedChangesCount}
             isSyncingUsers={isSyncingUsers}
-            onRefreshUsersFromSheet={() => handleRefreshUsersFromSheet().then(() => undefined)}
-            onPushUsersToSheet={() => setPendingSheetAction('push_full_db')}
-            token={token}
+            onRefreshUsersFromSheet={() =>
+              handleRefreshUsersFromSheet().then(() => undefined)
+            }
+            onPushUsersToSheet={handleUpdateDatabase}
+            cloudBridgeUrl={workspaceConfig.cloudBridgeUrl}
+            cloudBridgeKey={workspaceConfig.cloudBridgeKey}
           />
         ) : (
           <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
             <ShieldAlert className="w-8 h-8 text-amber-500 mx-auto" />
-            <h4 className="text-sm font-bold text-slate-900">Akses Khusus Admin / Super Admin</h4>
-            <p className="text-xs text-slate-500">Pengaturan Master Data &amp; Akun Pengguna hanya tersedia untuk peran Admin dan Super Admin.</p>
+            <h4 className="text-sm font-bold text-slate-900">
+              Akses Khusus Admin / Super Admin
+            </h4>
+            <p className="text-xs text-slate-500">
+              Pengaturan Master Data &amp; Akun Pengguna hanya tersedia untuk peran Admin dan Super Admin.
+            </p>
           </div>
-        )
-      )}
+        ))}
 
-      {/* Tab 8: Pengaturan Integrasi Google Workspace */}
+      {/* Tab 8: Pengaturan Database Spreadsheet & Drive */}
       {currentTab === 'workspace' && (
         <GoogleWorkspaceSettings
-          user={user}
-          token={token}
-          onSignIn={handleSignIn}
           workspaceConfig={workspaceConfig}
-          onUpdateConfig={(newCfg) => setWorkspaceConfig((prev) => ({ ...prev, ...newCfg }))}
+          onUpdateConfig={(newCfg) =>
+            setWorkspaceConfig((prev) => ({ ...prev, ...newCfg }))
+          }
           assets={assets}
-          onSyncAll={handleManualSync}
+          hasUnsavedChanges={hasUnsavedChanges}
+          unsavedChangesCount={unsavedChangesCount}
+          onUpdateDatabase={handleUpdateDatabase}
           onPullFromSheet={handlePullFromSheet}
           onRequestSpreadsheetAction={(action) => setPendingSheetAction(action)}
-          onFindExistingSpreadsheet={handleFindExistingSpreadsheet}
+          onTestBridgeConnection={handleConnectBridge}
           onDisableAutoSync={() => {
-            setWorkspaceConfig((prev) => ({ ...prev, autoSyncSpreadsheet: false }));
+            setWorkspaceConfig((prev) => ({
+              ...prev,
+              autoSyncSpreadsheet: false,
+            }));
             setToastMessage({
               type: 'info',
-              text: 'Auto-Sync real-time dimatikan. Anda masih bisa menyinkronkan manual kapan saja.',
+              text: 'Auto-Sync dimatikan. Gunakan tombol Update Database kapan saja untuk menyimpan ke Spreadsheet.',
             });
           }}
-          onOpenAuthHelp={() =>
-            setAuthHelpModal({
-              isOpen: true,
-              code: 'google-oauth-origins-checklist',
-              message: `Jika koneksi Google gagal di ${typeof window !== 'undefined' ? window.location.origin : 'domain ini'}, pastikan Origin sudah didaftarkan di Google Cloud Console OAuth 2.0 Client.`,
-            })
-          }
+          onOpenBridgeHelp={() => setIsBridgeHelpOpen(true)}
           isSyncing={isSyncing}
+          currentUserEmail={currentAppUser?.email || null}
         />
       )}
     </>
@@ -1361,7 +1568,9 @@ export default function App() {
             type="button"
             onClick={() => setViewMode('auto')}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0 ${
-              viewMode === 'auto' ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              viewMode === 'auto'
+                ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Laptop className="w-3.5 h-3.5" />
@@ -1371,7 +1580,9 @@ export default function App() {
             type="button"
             onClick={() => setViewMode('web')}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0 ${
-              viewMode === 'web' ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              viewMode === 'web'
+                ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Monitor className="w-3.5 h-3.5" />
@@ -1381,7 +1592,9 @@ export default function App() {
             type="button"
             onClick={() => setViewMode('mobile')}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap shrink-0 ${
-              viewMode === 'mobile' ? 'bg-blue-600 text-white shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              viewMode === 'mobile'
+                ? 'bg-blue-600 text-white shadow-xs font-semibold'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Smartphone className="w-3.5 h-3.5" />
@@ -1392,6 +1605,7 @@ export default function App() {
     </div>
   );
 
+  // Login Screen (Spreadsheet-backed only, zero Google OAuth)
   if (!currentAppUser) {
     return (
       <>
@@ -1421,42 +1635,44 @@ export default function App() {
           users={appUsers}
           companySettings={companySettings}
           workspaceConfig={workspaceConfig}
-          googleUser={user}
-          token={token}
           isSyncingUsers={isSyncingUsers}
-          onGoogleConnectAndSync={handleSignIn}
-          onRefreshUsersFromSheet={() => handleRefreshUsersFromSheet().then(() => undefined)}
-          onUpdateSheetId={(rawId) => {
-            const cleanId = rawId.includes('/d/') ? rawId.split('/d/')[1].split('/')[0] : rawId.trim();
-            setWorkspaceConfig((prev) => ({
-              ...prev,
-              spreadsheetId: cleanId,
-              spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanId}/edit`,
-            }));
-            if (token) {
-              handleRefreshUsersFromSheet(token, cleanId);
+          onRefreshUsersFromSheet={() =>
+            handleRefreshUsersFromSheet().then(() => undefined)
+          }
+          onConnectBridge={async (url, key, sheet) => {
+            try {
+              await handleConnectBridge(url, key, sheet);
+            } catch (err: any) {
+              setToastMessage({
+                type: 'error',
+                text: err?.message || 'Gagal menghubungkan ke Spreadsheet Bridge.',
+              });
             }
           }}
           onLoginSuccess={handleAppLoginSuccess}
           onActivateInvitedUser={handleActivateInvitedUser}
           onFirstSuperAdminCreated={handleFirstSuperAdminCreated}
-          onOpenAuthHelp={() =>
-            setAuthHelpModal({
-              isOpen: true,
-              code: 'google-oauth-origins-checklist',
-              message: `Jika koneksi Google gagal di ${typeof window !== 'undefined' ? window.location.origin : 'domain ini'}, pastikan Origin sudah didaftarkan di Google Cloud Console OAuth 2.0 Client.`,
-            })
-          }
+          onOpenBridgeHelp={() => setIsBridgeHelpOpen(true)}
           hasQrParam={Boolean(initialScanQuery)}
           onOpenQrResult={() => setIsScanModalOpen(true)}
         />
 
-        <AuthDomainHelpModal
-          isOpen={authHelpModal.isOpen}
-          onClose={() => setAuthHelpModal((prev) => ({ ...prev, isOpen: false }))}
-          errorCode={authHelpModal.code}
-          errorMessage={authHelpModal.message}
-          onRetrySignIn={handleSignIn}
+        <SpreadsheetBridgeHelpModal
+          isOpen={isBridgeHelpOpen}
+          onClose={() => setIsBridgeHelpOpen(false)}
+          bridgeUrl={workspaceConfig.cloudBridgeUrl || ''}
+          bridgeKey={workspaceConfig.cloudBridgeKey || ''}
+          spreadsheetId={workspaceConfig.spreadsheetId}
+          onApplyBridgeConfig={(url, key) => {
+            void handleConnectBridge(url, key, workspaceConfig.spreadsheetId || undefined).catch(
+              (err: any) => {
+                setToastMessage({
+                  type: 'error',
+                  text: err?.message || 'Gagal menghubungkan URL Cloud Bridge.',
+                });
+              }
+            );
+          }}
         />
 
         <BarcodeScannerModal
@@ -1519,14 +1735,14 @@ export default function App() {
             onOpenScanModal={() => setIsScanModalOpen(true)}
             onOpenBatchLabelModal={() => setIsBatchLabelModalOpen(true)}
             onOpenBatchImportModal={handleOpenBatchImport}
-            user={user}
-            hasToken={!!token}
-            onSignIn={handleSignIn}
-            onSignOut={handleSignOut}
             appUser={currentAppUser}
             onAppLogout={handleAppLogout}
+            isBridgeConnected={isBridgeConnected}
+            hasUnsavedChanges={hasUnsavedChanges}
+            unsavedChangesCount={unsavedChangesCount}
             isSyncing={isSyncing}
-            onManualSync={handleManualSync}
+            onUpdateDatabase={handleUpdateDatabase}
+            onPullFromSheet={handlePullFromSheet}
             spreadsheetUrl={workspaceConfig.spreadsheetUrl}
             companySettings={companySettings}
           />
@@ -1534,7 +1750,9 @@ export default function App() {
             renderDesktopModeSwitcher()
           ) : (
             <div className="bg-blue-50 border-b border-blue-200 px-3 py-1.5 flex items-center justify-between text-xs no-print">
-              <span className="text-blue-900 font-medium">Mode Web Desktop aktif di layar kecil</span>
+              <span className="text-blue-900 font-medium">
+                Mode Web Desktop aktif di layar kecil
+              </span>
               <button
                 type="button"
                 onClick={() => setViewMode('auto')}
@@ -1561,9 +1779,11 @@ export default function App() {
                 companySettings={companySettings}
                 onOpenAddAssetModal={handleOpenAddAsset}
                 onOpenScanModal={() => setIsScanModalOpen(true)}
-                user={user}
-                hasToken={!!token}
-                onSignIn={handleSignIn}
+                isBridgeConnected={isBridgeConnected}
+                hasUnsavedChanges={hasUnsavedChanges}
+                unsavedChangesCount={unsavedChangesCount}
+                isSyncing={isSyncing}
+                onUpdateDatabase={handleUpdateDatabase}
                 appUser={currentAppUser}
                 onOpenMenu={() => setIsMobileMenuOpen(true)}
               />
@@ -1586,14 +1806,14 @@ export default function App() {
                 onOpenTransactionModal={() => handleOpenTransactionForAsset()}
                 onOpenBatchLabelModal={() => setIsBatchLabelModalOpen(true)}
                 onOpenBatchImportModal={handleOpenBatchImport}
-                user={user}
-                hasToken={!!token}
-                onSignIn={handleSignIn}
-                onSignOut={handleSignOut}
                 appUser={currentAppUser}
                 onAppLogout={handleAppLogout}
+                isBridgeConnected={isBridgeConnected}
+                hasUnsavedChanges={hasUnsavedChanges}
+                unsavedChangesCount={unsavedChangesCount}
                 isSyncing={isSyncing}
-                onManualSync={handleManualSync}
+                onUpdateDatabase={handleUpdateDatabase}
+                onPullFromSheet={handlePullFromSheet}
                 onSwitchToWeb={() => setViewMode('web')}
                 isPreviewFrame={true}
               />
@@ -1610,9 +1830,11 @@ export default function App() {
             companySettings={companySettings}
             onOpenAddAssetModal={handleOpenAddAsset}
             onOpenScanModal={() => setIsScanModalOpen(true)}
-            user={user}
-            hasToken={!!token}
-            onSignIn={handleSignIn}
+            isBridgeConnected={isBridgeConnected}
+            hasUnsavedChanges={hasUnsavedChanges}
+            unsavedChangesCount={unsavedChangesCount}
+            isSyncing={isSyncing}
+            onUpdateDatabase={handleUpdateDatabase}
             appUser={currentAppUser}
             onOpenMenu={() => setIsMobileMenuOpen(true)}
           />
@@ -1635,14 +1857,14 @@ export default function App() {
             onOpenTransactionModal={() => handleOpenTransactionForAsset()}
             onOpenBatchLabelModal={() => setIsBatchLabelModalOpen(true)}
             onOpenBatchImportModal={handleOpenBatchImport}
-            user={user}
-            hasToken={!!token}
-            onSignIn={handleSignIn}
-            onSignOut={handleSignOut}
             appUser={currentAppUser}
             onAppLogout={handleAppLogout}
+            isBridgeConnected={isBridgeConnected}
+            hasUnsavedChanges={hasUnsavedChanges}
+            unsavedChangesCount={unsavedChangesCount}
             isSyncing={isSyncing}
-            onManualSync={handleManualSync}
+            onUpdateDatabase={handleUpdateDatabase}
+            onPullFromSheet={handlePullFromSheet}
             onSwitchToWeb={() => setViewMode('web')}
             isPreviewFrame={false}
           />
@@ -1655,8 +1877,11 @@ export default function App() {
         onClose={() => setIsTransactionModalOpen(false)}
         selectedAsset={selectedAssetForTrx}
         allAssets={assets}
-        token={token}
-        currentUserEmail={user?.email || currentAppUser?.email || null}
+        cloudBridgeUrl={workspaceConfig.cloudBridgeUrl}
+        cloudBridgeKey={workspaceConfig.cloudBridgeKey}
+        currentUserEmail={
+          currentAppUser?.email || workspaceConfig.notificationEmail || null
+        }
         workspaceConfig={workspaceConfig}
         onTransactionSuccess={handleTransactionSuccess}
         registeredLocations={locations}
@@ -1666,7 +1891,8 @@ export default function App() {
       <AddAssetModal
         isOpen={isAddAssetModalOpen}
         onClose={() => setIsAddAssetModalOpen(false)}
-        token={token}
+        cloudBridgeUrl={workspaceConfig.cloudBridgeUrl}
+        cloudBridgeKey={workspaceConfig.cloudBridgeKey}
         spreadsheetId={workspaceConfig.spreadsheetId}
         onAssetAdded={handleAssetAdded}
         existingCount={assets.length}
@@ -1696,7 +1922,8 @@ export default function App() {
         isOpen={isEditAssetModalOpen}
         onClose={() => setIsEditAssetModalOpen(false)}
         asset={selectedAssetForEdit}
-        token={token}
+        cloudBridgeUrl={workspaceConfig.cloudBridgeUrl}
+        cloudBridgeKey={workspaceConfig.cloudBridgeKey}
         onSaveAsset={handleSaveEditedAsset}
         onDeleteAsset={handleDeleteAsset}
         registeredLocations={locations}
@@ -1725,20 +1952,32 @@ export default function App() {
         initialQuery={initialScanQuery}
       />
 
-      {/* GitHub Pages / Firebase OAuth Help Modal */}
-      <AuthDomainHelpModal
-        isOpen={authHelpModal.isOpen}
-        onClose={() => setAuthHelpModal((prev) => ({ ...prev, isOpen: false }))}
-        errorCode={authHelpModal.code}
-        errorMessage={authHelpModal.message}
-        onRetrySignIn={handleSignIn}
+      {/* Spreadsheet Cloud Bridge & Apps Script Code.gs Help Modal */}
+      <SpreadsheetBridgeHelpModal
+        isOpen={isBridgeHelpOpen}
+        onClose={() => setIsBridgeHelpOpen(false)}
+        bridgeUrl={workspaceConfig.cloudBridgeUrl || ''}
+        bridgeKey={workspaceConfig.cloudBridgeKey || ''}
+        spreadsheetId={workspaceConfig.spreadsheetId}
+        onApplyBridgeConfig={(url, key) => {
+          void handleConnectBridge(url, key, workspaceConfig.spreadsheetId || undefined).catch(
+            (err: any) => {
+              setToastMessage({
+                type: 'error',
+                text: err?.message || 'Gagal menghubungkan URL Cloud Bridge.',
+              });
+            }
+          );
+        }}
       />
 
       {/* Explicit Confirmation Modal for Spreadsheet Database Operations */}
       <SpreadsheetConfirmModal
         isOpen={Boolean(pendingSheetAction)}
         action={pendingSheetAction}
-        spreadsheetName={workspaceConfig.spreadsheetName || 'AsetKantor_Database_Inventaris'}
+        spreadsheetName={
+          workspaceConfig.spreadsheetName || 'AsetKantor_Database_Inventaris'
+        }
         counts={{
           assets: assets.length,
           transactions: transactions.length,
@@ -1749,6 +1988,7 @@ export default function App() {
           vendors: vendors.length,
           users: appUsers.length,
         }}
+        unsavedChangesCount={unsavedChangesCount}
         isProcessing={isSyncing}
         onConfirm={executeConfirmedSpreadsheetAction}
         onCancel={() => setPendingSheetAction(null)}
@@ -1759,12 +1999,17 @@ export default function App() {
         isOpen={isBastModalOpen}
         onClose={() => setIsBastModalOpen(false)}
         transaction={selectedTrxForBast}
-        asset={assets.find((a) => a.id === selectedTrxForBast?.assetId) || null}
-        token={token}
+        asset={
+          assets.find((a) => a.id === selectedTrxForBast?.assetId) || null
+        }
+        cloudBridgeUrl={workspaceConfig.cloudBridgeUrl}
+        cloudBridgeKey={workspaceConfig.cloudBridgeKey}
         companySettings={companySettings}
         onSaveSignature={(trxId, sigUrl) => {
           setTransactions((prev) =>
-            prev.map((t) => (t.id === trxId ? { ...t, signatureDataUrl: sigUrl } : t))
+            prev.map((t) =>
+              t.id === trxId ? { ...t, signatureDataUrl: sigUrl } : t
+            )
           );
         }}
       />
@@ -1788,7 +2033,7 @@ export default function App() {
       {!effectiveIsMobile && (
         <footer className="bg-white border-t border-slate-200 mt-12 py-5 text-center text-xs text-slate-500 no-print">
           <p>
-            AsetKantor Enterprise &bull; Sistem Manajemen Inventaris Terintegrasi Google Sheets, Google Drive, &amp; Gmail API.
+            AsetKantor Enterprise &bull; Database Google Spreadsheet Online &amp; Google Drive (Tanpa Login Google).
           </p>
         </footer>
       )}

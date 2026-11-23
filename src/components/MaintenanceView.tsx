@@ -18,8 +18,8 @@ import {
   Loader2
 } from 'lucide-react';
 import { MaintenanceRecord, MaintenanceStatus, MaintenanceType, OfficeAsset, MasterVendor } from '../types';
-import { sendGmailMessage } from '../services/gmailService';
-import { uploadAssetFileToDrive, getDriveOpenLink } from '../services/driveService';
+import { getDriveOpenLink } from '../services/driveService';
+import { sendEmailViaBridge, uploadImageViaBridge } from '../services/cloudBridgeService';
 import { CurrencyInput } from './CurrencyInput';
 
 interface MaintenanceViewProps {
@@ -32,7 +32,8 @@ interface MaintenanceViewProps {
     restoreAssetCondition: boolean,
     driveInvoiceUrl?: string
   ) => void;
-  token: string | null;
+  cloudBridgeUrl?: string | null;
+  cloudBridgeKey?: string;
   currentUserEmail: string | null;
   vendors?: MasterVendor[];
 }
@@ -42,7 +43,8 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
   records,
   onAddRecord,
   onCompleteRecord,
-  token,
+  cloudBridgeUrl,
+  cloudBridgeKey,
   currentUserEmail,
   vendors = [],
 }) => {
@@ -115,17 +117,19 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
   };
 
   const handleSendReminderEmail = async (rec: MaintenanceRecord) => {
-    if (!token) {
-      alert('Silakan hubungkan akun Google untuk mengirim email reminder.');
+    if (!cloudBridgeUrl) {
+      setEmailStatus('Cloud Bridge Spreadsheet belum terhubung untuk mengirim notifikasi email.');
       return;
     }
 
     const recipient = currentUserEmail || 'ga.maintenance@kantor.internal';
     try {
-      await sendGmailMessage(token, {
-        to: recipient,
-        subject: `[Jadwal Servis Aset] Pengingat Pemeliharaan: ${rec.assetName} (${rec.assetId})`,
-        htmlBody: `
+      await sendEmailViaBridge(
+        cloudBridgeUrl,
+        {
+          to: recipient,
+          subject: `[Jadwal Servis Aset] Pengingat Pemeliharaan: ${rec.assetName} (${rec.assetId})`,
+          htmlBody: `
           <div style="font-family: sans-serif; padding: 20px; background: #f8fafc; border-radius: 8px;">
             <h3 style="color: #0f172a;">Pengingat Jadwal Servis & Pemeliharaan Aset Kantor</h3>
             <p style="color: #334155;">Berikut adalah rincian agenda servis berkala yang dijadwalkan:</p>
@@ -139,10 +143,12 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
             </table>
           </div>
         `,
-      });
-      alert(`Email pengingat servis berhasil dikirim ke ${recipient}!`);
+        },
+        cloudBridgeKey
+      );
+      setEmailStatus(`Email pengingat servis berhasil dikirim ke ${recipient}!`);
     } catch (err: any) {
-      alert(`Gagal mengirim email: ${err.message}`);
+      setEmailStatus(`Gagal mengirim email: ${err.message}`);
     }
   };
 
@@ -182,6 +188,19 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
           </button>
         </div>
       </div>
+
+      {emailStatus && (
+        <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-center justify-between">
+          <span>{emailStatus}</span>
+          <button
+            type="button"
+            onClick={() => setEmailStatus(null)}
+            className="text-blue-700 hover:underline font-semibold ml-3 cursor-pointer"
+          >
+            Tutup
+          </button>
+        </div>
+      )}
 
       {/* Maintenance List */}
       {filtered.length === 0 ? (
@@ -512,14 +531,15 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
                   setIsCompleting(true);
                   let driveInvoiceUrl: string | undefined;
                   try {
-                    if (invoiceFile && token) {
+                    if (invoiceFile && cloudBridgeUrl) {
                       const dateStr = new Date().toISOString().split('T')[0];
-                      const res = await uploadAssetFileToDrive(
-                        token,
+                      const res = await uploadImageViaBridge(
+                        cloudBridgeUrl,
                         invoiceFile,
                         `NOTA_${completingRecord.id}_${dateStr}.jpg`,
                         [completingRecord.assetId, 'Maintenance_Invoices'],
-                        `Nota servis ${completingRecord.serviceType} aset ${completingRecord.assetId}`
+                        `Nota servis ${completingRecord.serviceType} aset ${completingRecord.assetId}`,
+                        cloudBridgeKey
                       );
                       driveInvoiceUrl = res.imageUrl;
                     }

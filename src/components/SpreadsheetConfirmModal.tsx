@@ -2,8 +2,8 @@ import React from 'react';
 import { FileSpreadsheet, AlertTriangle, CheckCircle2, X, Loader2 } from 'lucide-react';
 
 export type SpreadsheetConfirmAction =
-  | 'create_db'
-  | 'push_full_db'
+  | 'init_db'
+  | 'update_db'
   | 'pull_full_db'
   | 'enable_auto_sync';
 
@@ -21,6 +21,7 @@ interface SpreadsheetConfirmModalProps {
     vendors: number;
     users?: number;
   };
+  unsavedChangesCount?: number;
   isProcessing: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -31,6 +32,7 @@ export const SpreadsheetConfirmModal: React.FC<SpreadsheetConfirmModalProps> = (
   action,
   spreadsheetName,
   counts,
+  unsavedChangesCount = 0,
   isProcessing,
   onConfirm,
   onCancel,
@@ -41,27 +43,34 @@ export const SpreadsheetConfirmModal: React.FC<SpreadsheetConfirmModalProps> = (
     SpreadsheetConfirmAction,
     { title: string; desc: string; confirmLabel: string; warning?: string }
   > = {
-    create_db: {
-      title: 'Buat Database Google Spreadsheet Baru?',
-      desc: `Aplikasi akan membuat file Google Spreadsheet baru bernama "${spreadsheetName}" dengan 11 tab database (Daftar Aset, Riwayat Mutasi, Servis, Stock Opname, BAPA, Master Lokasi, Vendor, Divisi, Sub Kelompok, Pengaturan, dan Akun Pengguna) lalu mengisinya dengan data saat ini.`,
-      confirmLabel: 'Ya, Buat & Simpan Database',
+    init_db: {
+      title: 'Inisialisasi 11 Tab & Simpan Database ke Spreadsheet?',
+      desc: `Cloud Bridge akan menyiapkan seluruh struktur 11 tab database (Daftar_Aset, Riwayat_Mutasi, Pemeliharaan_Servis, Stock_Opname, Penghapusan_BAPA, Master_Lokasi, Master_Vendor, Master_Divisi, Master_SubKelompok, Pengaturan_Aplikasi, dan Master_Pengguna) di Google Spreadsheet "${spreadsheetName}" lalu mengisi data saat ini.`,
+      confirmLabel: 'Ya, Inisialisasi & Simpan Database',
     },
-    push_full_db: {
-      title: 'Simpan & Perbarui Seluruh Database di Spreadsheet?',
-      desc: `Tindakan ini akan menulis ulang seluruh 11 tab di Google Spreadsheet "${spreadsheetName}" menggunakan data terbaru dari perangkat ini.`,
-      warning: 'Baris data lama di dalam Google Spreadsheet tersebut akan diganti dengan data terbaru saat ini.',
-      confirmLabel: 'Ya, Simpan ke Spreadsheet',
+    update_db: {
+      title: 'Update Database Google Spreadsheet Sekarang?',
+      desc:
+        unsavedChangesCount > 0
+          ? `Terdapat ${unsavedChangesCount} perubahan data lokal yang belum tersimpan. Tindakan ini akan memperbarui seluruh 11 tab di Google Spreadsheet "${spreadsheetName}" agar langsung terbaca di semua perangkat online.`
+          : `Tindakan ini akan memperbarui seluruh 11 tab di Google Spreadsheet "${spreadsheetName}" menggunakan data terbaru dari perangkat ini.`,
+      warning:
+        'Isi 11 tab di Google Spreadsheet target akan diperbarui sesuai data terbaru pada aplikasi ini.',
+      confirmLabel: 'Ya, Update Database Sekarang',
     },
     pull_full_db: {
-      title: 'Muat Database dari Google Spreadsheet?',
-      desc: `Data di perangkat ini akan digantikan oleh seluruh data terbaru yang tersimpan di Google Spreadsheet "${spreadsheetName}".`,
-      warning: 'Perubahan lokal yang belum dikirim ke Spreadsheet akan ditimpa oleh isi Spreadsheet.',
+      title: 'Muat Ulang Database dari Google Spreadsheet?',
+      desc: `Seluruh data di perangkat ini akan disinkronkan ulang menggunakan data terbaru dari Google Spreadsheet "${spreadsheetName}".`,
+      warning:
+        unsavedChangesCount > 0
+          ? `Perhatian: Ada ${unsavedChangesCount} perubahan lokal yang belum di-Update ke Spreadsheet. Perubahan lokal tersebut akan ditimpa jika Anda melanjutkan Muat Ulang.`
+          : 'Data lokal perangkat ini akan digantikan oleh versi terbaru dari Google Spreadsheet.',
       confirmLabel: 'Ya, Muat Data Spreadsheet',
     },
     enable_auto_sync: {
       title: 'Aktifkan Sinkronisasi Otomatis ke Spreadsheet?',
-      desc: `Saat aktif, setiap kali Anda menambah, mengubah, meminjam, mengembalikan, atau menghapus aset, akun pengguna, dan master data, aplikasi akan otomatis memperbarui Google Spreadsheet "${spreadsheetName}".`,
-      confirmLabel: 'Ya, Jadikan Spreadsheet Database Utama',
+      desc: `Saat aktif, setiap kali Anda menambah, mengubah, meminjam, mengembalikan, atau menghapus aset, akun pengguna, dan master data, aplikasi akan otomatis memperbarui Google Spreadsheet "${spreadsheetName}" melalui Cloud Bridge.`,
+      confirmLabel: 'Ya, Aktifkan Auto-Sync Bridge',
     },
   };
 
