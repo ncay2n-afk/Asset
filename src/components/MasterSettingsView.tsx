@@ -41,7 +41,7 @@ import {
 } from '../types';
 import { CodeItem } from '../data/assetCodeGenerator';
 import { UserManagementPanel } from './UserManagementPanel';
-import { compressImageFileToDataUrl } from '../services/driveService';
+import { compressLogoForSheetFallback, handleDriveImageError, normalizeDriveImageUrl } from '../services/driveService';
 import { uploadImageViaBridge } from '../services/cloudBridgeService';
 
 interface MasterSettingsViewProps {
@@ -147,6 +147,7 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
   // Company Settings Form State
   const [companyForm, setCompanyForm] = useState<MasterCompanySettings>(companySettings);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [logoStatusMsg, setLogoStatusMsg] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
     setCompanyForm(companySettings);
@@ -195,10 +196,11 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       if (file.size > 4 * 1024 * 1024) {
-        alert('Ukuran file logo maksimal 4MB.');
+        setLogoStatusMsg({ type: 'error', text: 'Ukuran file logo maksimal 4MB.' });
         return;
       }
       setIsUploadingLogo(true);
+      setLogoStatusMsg(null);
       try {
         if (cloudBridgeUrl) {
           const driveRes = await uploadImageViaBridge(
@@ -209,17 +211,37 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
             `Logo resmi ${companyForm.companyName}`,
             cloudBridgeKey
           );
-          setCompanyForm((prev) => ({ ...prev, logoUrl: driveRes.imageUrl }));
+          const nextSettings = { ...companyForm, logoUrl: driveRes.imageUrl };
+          setCompanyForm(nextSettings);
+          onUpdateCompanySettings(nextSettings);
+          setLogoStatusMsg({
+            type: 'success',
+            text: 'Logo berhasil diunggah ke Google Drive! Jangan lupa klik tombol "Update Database" agar logo tampil di semua device.',
+          });
         } else {
-          const compressed = await compressImageFileToDataUrl(file, 320, 0.78);
-          setCompanyForm((prev) => ({ ...prev, logoUrl: compressed }));
+          const compressed = await compressLogoForSheetFallback(file);
+          const nextSettings = { ...companyForm, logoUrl: compressed };
+          setCompanyForm(nextSettings);
+          onUpdateCompanySettings(nextSettings);
+          setLogoStatusMsg({
+            type: 'info',
+            text: 'Logo disimpan (mode terkompresi). Hubungkan Cloud Bridge lalu klik "Update Database" agar tersinkron ke semua device.',
+          });
         }
       } catch (err: any) {
         console.warn('Gagal upload logo ke Drive, menggunakan kompresi lokal:', err);
         try {
-          const compressed = await compressImageFileToDataUrl(file, 320, 0.78);
-          setCompanyForm((prev) => ({ ...prev, logoUrl: compressed }));
-        } catch {}
+          const compressed = await compressLogoForSheetFallback(file);
+          const nextSettings = { ...companyForm, logoUrl: compressed };
+          setCompanyForm(nextSettings);
+          onUpdateCompanySettings(nextSettings);
+          setLogoStatusMsg({
+            type: 'info',
+            text: 'Upload Drive gagal, logo dikompresi aman untuk Spreadsheet. Klik "Update Database" untuk menyimpan.',
+          });
+        } catch {
+          setLogoStatusMsg({ type: 'error', text: 'Gagal memproses file gambar logo.' });
+        }
       } finally {
         setIsUploadingLogo(false);
       }
@@ -227,14 +249,20 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
   };
 
   const handleRemoveLogo = () => {
-    setCompanyForm((prev) => ({ ...prev, logoUrl: undefined }));
+    const nextSettings = { ...companyForm, logoUrl: undefined };
+    setCompanyForm(nextSettings);
+    onUpdateCompanySettings(nextSettings);
+    setLogoStatusMsg({ type: 'info', text: 'Logo dihapus. Klik "Update Database" untuk memperbarui Spreadsheet.' });
   };
 
   // Save Company Settings
   const handleSaveCompany = (e: React.FormEvent) => {
     e.preventDefault();
     onUpdateCompanySettings(companyForm);
-    alert('Pengaturan identitas perusahaan dan logo berhasil disimpan!');
+    setLogoStatusMsg({
+      type: 'success',
+      text: 'Pengaturan identitas perusahaan tersimpan. Klik "Update Database" jika ingin menyinkronkan ke Spreadsheet.',
+    });
   };
 
   // Add Location
@@ -530,8 +558,9 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
         <div className="flex items-center gap-3">
           {companySettings.logoUrl ? (
             <img
-              src={companySettings.logoUrl}
+              src={normalizeDriveImageUrl(companySettings.logoUrl)}
               alt="Logo Perusahaan"
+              onError={(e) => handleDriveImageError(e, companySettings.logoUrl)}
               className="w-12 h-12 rounded-xl object-contain bg-slate-50 border border-slate-200 p-1"
             />
           ) : (
@@ -665,8 +694,9 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
               {companyForm.logoUrl ? (
                 <div className="w-24 h-24 rounded-2xl bg-white border-2 border-blue-400 p-1 flex items-center justify-center overflow-hidden shadow-sm relative group">
                   <img
-                    src={companyForm.logoUrl}
+                    src={normalizeDriveImageUrl(companyForm.logoUrl)}
                     alt="Logo Perusahaan"
+                    onError={(e) => handleDriveImageError(e, companyForm.logoUrl)}
                     className="w-full h-full object-contain"
                   />
                   <button
@@ -688,7 +718,7 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
             <div className="space-y-2 flex-1 text-center sm:text-left">
               <h5 className="text-xs font-bold text-slate-800">Unggah File Logo Perusahaan</h5>
               <p className="text-[11px] text-slate-500 max-w-lg leading-relaxed">
-                Mendukung format PNG transparan, JPG, SVG, atau WebP (Disarankan rasio kotak / horizontal proporsional, maks. 2MB).
+                Mendukung format PNG transparan, JPG, SVG, atau WebP (Disarankan rasio kotak / horizontal proporsional, maks. 4MB).
               </p>
 
               <div className="flex flex-wrap items-center gap-2 pt-1 justify-center sm:justify-start">
@@ -714,6 +744,20 @@ export const MasterSettingsView: React.FC<MasterSettingsViewProps> = ({
                   </button>
                 )}
               </div>
+
+              {logoStatusMsg && (
+                <p
+                  className={`text-[11px] font-medium px-3 py-1.5 rounded-lg border ${
+                    logoStatusMsg.type === 'success'
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                      : logoStatusMsg.type === 'error'
+                      ? 'bg-rose-50 text-rose-800 border-rose-200'
+                      : 'bg-blue-50 text-blue-800 border-blue-200'
+                  }`}
+                >
+                  {logoStatusMsg.text}
+                </p>
+              )}
             </div>
           </div>
 

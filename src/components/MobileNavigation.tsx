@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Boxes,
   History,
@@ -27,6 +27,7 @@ import {
 import { AppTab } from './Navbar';
 import { MasterCompanySettings, AppUserAccount } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
+import { handleDriveImageError, normalizeDriveImageUrl } from '../services/driveService';
 
 const ROLE_SHORT: Record<AppUserAccount['role'], string> = {
   SUPER_ADMIN: 'Super Admin',
@@ -49,6 +50,7 @@ const TAB_TITLES: Record<AppTab, string> = {
 interface MobileTopBarProps {
   currentTab: AppTab;
   companySettings?: MasterCompanySettings;
+  logoFallbackUrl?: string;
   onOpenAddAssetModal: () => void;
   onOpenScanModal: () => void;
   isBridgeConnected: boolean;
@@ -63,6 +65,7 @@ interface MobileTopBarProps {
 export const MobileTopBar: React.FC<MobileTopBarProps> = ({
   currentTab,
   companySettings,
+  logoFallbackUrl,
   onOpenAddAssetModal,
   onOpenScanModal,
   hasUnsavedChanges = false,
@@ -73,14 +76,24 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
   onOpenMenu,
 }) => {
   const canMutateAssets = !appUser || appUser.role !== 'AUDITOR';
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+
+  useEffect(() => {
+    setLogoLoadFailed(false);
+  }, [companySettings?.logoUrl, logoFallbackUrl]);
 
   return (
     <header className="sticky top-0 z-30 h-13 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white px-3 flex items-center justify-between gap-2 pt-safe no-print">
       <div className="flex items-center gap-2.5 min-w-0">
-        {companySettings?.logoUrl ? (
+        {(companySettings?.logoUrl || logoFallbackUrl) && !logoLoadFailed ? (
           <img
-            src={companySettings.logoUrl}
-            alt={companySettings.companyName || 'Logo'}
+            src={normalizeDriveImageUrl(companySettings?.logoUrl) || logoFallbackUrl}
+            alt={companySettings?.companyName || 'Logo'}
+            onError={(e) =>
+              handleDriveImageError(e, companySettings?.logoUrl, logoFallbackUrl, () =>
+                setLogoLoadFailed(true)
+              )
+            }
             className="w-8 h-8 rounded-lg bg-white p-0.5 object-contain shrink-0"
           />
         ) : (

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { MasterCompanySettings, AppUserAccount } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
+import { handleDriveImageError, normalizeDriveImageUrl } from '../services/driveService';
 
 export type AppTab =
   | 'assets'
@@ -50,6 +51,7 @@ interface NavbarProps {
   onPullFromSheet: () => void;
   spreadsheetUrl: string | null;
   companySettings?: MasterCompanySettings;
+  logoFallbackUrl?: string;
 }
 
 const ROLE_SHORT: Record<AppUserAccount['role'], string> = {
@@ -76,7 +78,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   onUpdateDatabase,
   onPullFromSheet,
   companySettings,
+  logoFallbackUrl,
 }) => {
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+
+  useEffect(() => {
+    setLogoLoadFailed(false);
+  }, [companySettings?.logoUrl, logoFallbackUrl]);
   const [isToolsDropdownOpen, setIsToolsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -122,10 +130,15 @@ export const Navbar: React.FC<NavbarProps> = ({
             onClick={() => setCurrentTab('assets')}
             className="flex items-center gap-2.5 whitespace-nowrap shrink-0 cursor-pointer text-left"
           >
-            {companySettings?.logoUrl ? (
+            {(companySettings?.logoUrl || logoFallbackUrl) && !logoLoadFailed ? (
               <img
-                src={companySettings.logoUrl}
+                src={normalizeDriveImageUrl(companySettings?.logoUrl) || logoFallbackUrl}
                 alt={displayCompanyName}
+                onError={(e) =>
+                  handleDriveImageError(e, companySettings?.logoUrl, logoFallbackUrl, () =>
+                    setLogoLoadFailed(true)
+                  )
+                }
                 className="w-8 h-8 rounded-lg bg-white p-0.5 object-contain shrink-0"
               />
             ) : (

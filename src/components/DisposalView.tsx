@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { OfficeAsset, DisposalRecord, DisposalType, MasterCompanySettings } from '../types';
 import { CurrencyInput } from './CurrencyInput';
+import { normalizeDriveImageUrl, handleDriveImageError } from '../services/driveService';
 
 interface DisposalViewProps {
   assets: OfficeAsset[];
@@ -371,8 +372,9 @@ export const DisposalView: React.FC<DisposalViewProps> = ({
               <div className="border-b-2 border-slate-900 pb-4 flex items-center justify-center gap-4 text-center">
                 {companySettings?.logoUrl && (
                   <img
-                    src={companySettings.logoUrl}
+                    src={normalizeDriveImageUrl(companySettings.logoUrl)}
                     alt="Logo"
+                    onError={(e) => handleDriveImageError(e, companySettings.logoUrl)}
                     className="w-14 h-14 object-contain rounded"
                   />
                 )}

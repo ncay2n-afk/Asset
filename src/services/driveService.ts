@@ -1,3 +1,5 @@
+import type React from 'react';
+
 export interface DriveUploadResult {
   fileId: string;
   fileName: string;
@@ -45,6 +47,7 @@ export function normalizeDriveImageUrl(url?: string | null): string {
   if (!url) return '';
   const trimmed = url.trim();
   if (!trimmed) return '';
+  if (trimmed.startsWith('data:image/')) return trimmed;
   const fileId = extractDriveFileId(trimmed);
   if (fileId) {
     return getDriveDisplayUrl(fileId, 1200);
@@ -65,6 +68,47 @@ export function getDriveOpenLink(url?: string | null): string {
 }
 
 /**
+ * Cycles through alternative Google Drive CDN URLs (and optional inline dataUrl fallback)
+ * when an <img> fails to load on devices without Google login or with strict cookie rules.
+ */
+export function handleDriveImageError(
+  event: React.SyntheticEvent<HTMLImageElement>,
+  originalUrl?: string | null,
+  inlineFallbackDataUrl?: string | null,
+  onAllFailed?: () => void
+): void {
+  const img = event.currentTarget;
+  const step = Number(img.dataset.fallbackStep || '0');
+  const fileId = extractDriveFileId(originalUrl || img.src);
+
+  const candidates: string[] = [];
+  if (fileId) {
+    candidates.push(
+      `https://lh3.googleusercontent.com/d/${fileId}=w1200`,
+      `https://drive.google.com/uc?export=view&id=${fileId}`,
+      `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`
+    );
+  }
+  if (inlineFallbackDataUrl && inlineFallbackDataUrl !== img.src) {
+    candidates.push(inlineFallbackDataUrl);
+  }
+
+  // Find next candidate that hasn't been tried and differs from current src
+  let nextIdx = step;
+  while (nextIdx < candidates.length && candidates[nextIdx] === img.src) {
+    nextIdx++;
+  }
+
+  if (nextIdx < candidates.length) {
+    img.dataset.fallbackStep = String(nextIdx + 1);
+    img.src = candidates[nextIdx];
+    return;
+  }
+
+  onAllFailed?.();
+}
+
+/**
  * Converts a Blob or File into raw base64 string (without data:* prefix).
  */
 export async function blobToBase64(blob: Blob): Promise<string> {
@@ -81,13 +125,28 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /**
+ * Converts a Data URL (e.g. data:image/png;base64,...) into a Blob for uploading to Drive.
+ */
+export function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = dataUrl.split(',');
+  const mimeMatch = parts[0]?.match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+  const binary = atob(parts[1] || '');
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
+}
+
+/**
  * Compresses an image File/Blob into a lightweight JPEG/PNG Data URL.
- * Used both as offline/local fallback and to resize large smartphone photos before uploading via Cloud Bridge.
  */
 export async function compressImageFileToDataUrl(
   file: Blob,
   maxDimension: number = 480,
-  quality: number = 0.72
+  quality: number = 0.72,
+  forceMime?: 'image/jpeg' | 'image/png'
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -113,9 +172,14 @@ export async function compressImageFileToDataUrl(
           reject(new Error('Canvas context unavailable'));
           return;
         }
+        const usePng = forceMime ? forceMime === 'image/png' : file.type === 'image/png';
+        if (!usePng) {
+          // Fill white background before JPEG export so transparent PNG logos look clean
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, width, height);
+        }
         ctx.drawImage(img, 0, 0, width, height);
-        const isPng = file.type === 'image/png';
-        const dataUrl = isPng
+        const dataUrl = usePng
           ? canvas.toDataURL('image/png')
           : canvas.toDataURL('image/jpeg', quality);
         URL.revokeObjectURL(objUrl);
@@ -134,6 +198,20 @@ export async function compressImageFileToDataUrl(
 }
 
 /**
+ * Compresses a company logo into a compact Data URL guaranteed <= 40,000 characters
+ * so it is never dropped by Google Sheets' 50,000-character cell limit if stored inline.
+ */
+export async function compressLogoForSheetFallback(file: Blob): Promise<string> {
+  const pngAttempt = await compressImageFileToDataUrl(file, 200, 0.8, 'image/png');
+  if (pngAttempt.length <= 40000) return pngAttempt;
+
+  const jpegAttempt1 = await compressImageFileToDataUrl(file, 256, 0.78, 'image/jpeg');
+  if (jpegAttempt1.length <= 40000) return jpegAttempt1;
+
+  return compressImageFileToDataUrl(file, 160, 0.65, 'image/jpeg');
+}
+
+/**
  * Prepares an image File/Blob as a reasonably sized base64 payload for Cloud Bridge upload to Google Drive.
  */
 export async function prepareImageForBridgeUpload(
@@ -141,7 +219,6 @@ export async function prepareImageForBridgeUpload(
 ): Promise<{ base64Data: string; mimeType: string }> {
   const mimeType = file.type || 'image/jpeg';
 
-  // Keep PNG signatures/logos crisp if already under 1.2MB
   if (mimeType === 'image/png' && file.size <= 1_200_000) {
     return {
       base64Data: await blobToBase64(file),
@@ -149,7 +226,6 @@ export async function prepareImageForBridgeUpload(
     };
   }
 
-  // Keep moderate JPEG/WebP files directly if under 1.5MB
   if (file.size <= 1_500_000 && mimeType.startsWith('image/')) {
     return {
       base64Data: await blobToBase64(file),
@@ -157,7 +233,6 @@ export async function prepareImageForBridgeUpload(
     };
   }
 
-  // Otherwise resize smoothly to max 1400px so mobile uploads to Apps Script stay fast and reliable
   try {
     const dataUrl = await compressImageFileToDataUrl(file, 1400, 0.82);
     const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
@@ -167,9 +242,7 @@ export async function prepareImageForBridgeUpload(
         base64Data: match[2],
       };
     }
-  } catch {
-    // Fallback to raw bytes if canvas fails (e.g., SVG)
-  }
+  } catch {}
 
   return {
     base64Data: await blobToBase64(file),

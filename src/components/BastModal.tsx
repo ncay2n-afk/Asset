@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { X, Printer, FileText, CheckCircle2, Eraser, PenTool, ExternalLink, Loader2 } from 'lucide-react';
 import { AssetTransaction, OfficeAsset, MasterCompanySettings } from '../types';
-import { canvasToPngBlob, normalizeDriveImageUrl, getDriveOpenLink } from '../services/driveService';
+import { canvasToPngBlob, normalizeDriveImageUrl, getDriveOpenLink, handleDriveImageError } from '../services/driveService';
 import { uploadImageViaBridge } from '../services/cloudBridgeService';
 
 interface BastModalProps {
@@ -166,8 +166,9 @@ export const BastModal: React.FC<BastModalProps> = ({
           <div className="border-b-2 border-slate-900 pb-4 flex items-center justify-center gap-4 text-center">
             {companySettings?.logoUrl && (
               <img
-                src={companySettings.logoUrl}
+                src={normalizeDriveImageUrl(companySettings.logoUrl)}
                 alt="Logo"
+                onError={(e) => handleDriveImageError(e, companySettings.logoUrl)}
                 className="w-14 h-14 object-contain rounded"
               />
             )}

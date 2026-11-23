@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { X, Printer, QrCode, Tag, Check, Layers, Sliders, Shield, Info } from 'lucide-react';
 import { OfficeAsset, MasterCompanySettings } from '../types';
 import { parseAssetCode } from '../data/assetCodeGenerator';
+import { normalizeDriveImageUrl, handleDriveImageError } from '../services/driveService';
 
 interface AssetLabelModalProps {
   isOpen: boolean;
@@ -320,8 +321,9 @@ export const AssetLabelModal: React.FC<AssetLabelModalProps> = ({
                   {companySettings?.logoUrl && (
                     <div className="shrink-0 bg-white p-1 rounded-lg border border-slate-300 flex items-center justify-center shadow-xs">
                       <img
-                        src={companySettings.logoUrl}
+                        src={normalizeDriveImageUrl(companySettings.logoUrl)}
                         alt="Logo"
+                        onError={(e) => handleDriveImageError(e, companySettings.logoUrl)}
                         className={`object-contain transition-all ${
                           logoSize === 'xlarge'
                             ? 'h-24 max-w-[200px]'

@@ -67,8 +67,11 @@ import {
   pullFullDatabaseViaBridge,
   saveFullDatabaseViaBridge,
   initDatabaseViaBridge,
-  fetchPublicSheetUsersFallback
+  fetchPublicSheetUsersFallback,
+  uploadImageViaBridge,
+  BridgeCompanyBranding
 } from './services/cloudBridgeService';
+import { dataUrlToBlob } from './services/driveService';
 import {
   CheckCircle2,
   AlertCircle,
@@ -92,6 +95,7 @@ const LOCAL_STORAGE_USERS_KEY = 'aset_kantor_users_v3';
 const LOCAL_STORAGE_CONFIG_KEY = 'aset_kantor_config_v3';
 const LOCAL_STORAGE_VIEW_MODE_KEY = 'aset_kantor_view_mode';
 const LOCAL_STORAGE_DIRTY_KEY = 'aset_kantor_dirty_count_v1';
+const LOCAL_STORAGE_LOGO_FALLBACK_KEY = 'aset_kantor_logo_fallback_v1';
 
 type ViewMode = 'auto' | 'web' | 'mobile';
 
@@ -244,6 +248,14 @@ export default function App() {
     }
   });
 
+  const [logoFallbackDataUrl, setLogoFallbackDataUrl] = useState<string | undefined>(() => {
+    try {
+      return localStorage.getItem(LOCAL_STORAGE_LOGO_FALLBACK_KEY) || undefined;
+    } catch {
+      return undefined;
+    }
+  });
+
   const [customDivisions, setCustomDivisions] = useState<CodeItem[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_DIV_KEY);
@@ -383,6 +395,16 @@ export default function App() {
 
   useEffect(() => {
     try {
+      if (logoFallbackDataUrl) {
+        localStorage.setItem(LOCAL_STORAGE_LOGO_FALLBACK_KEY, logoFallbackDataUrl);
+      } else {
+        localStorage.removeItem(LOCAL_STORAGE_LOGO_FALLBACK_KEY);
+      }
+    } catch {}
+  }, [logoFallbackDataUrl]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(LOCAL_STORAGE_DIV_KEY, JSON.stringify(customDivisions));
     } catch {}
   }, [customDivisions]);
@@ -505,6 +527,23 @@ export default function App() {
     ]
   );
 
+  const applyBridgeBranding = useCallback((branding?: BridgeCompanyBranding) => {
+    if (!branding) return;
+    if (branding.logoDataUrl) {
+      setLogoFallbackDataUrl(branding.logoDataUrl);
+    }
+    if (branding.companyName || branding.brandSubtitle || branding.logoUrl) {
+      skipNextAutoSyncRef.current = true;
+      skipNextDirtyMarkRef.current = true;
+      setCompanySettings((prev) => ({
+        ...prev,
+        ...(branding.companyName ? { companyName: branding.companyName } : {}),
+        ...(branding.brandSubtitle ? { brandSubtitle: branding.brandSubtitle } : {}),
+        ...(branding.logoUrl ? { logoUrl: branding.logoUrl } : {}),
+      }));
+    }
+  }, []);
+
   // Fetch active users from Master_Pengguna (Cloud Bridge primary, public sheet gviz fallback)
   const handleRefreshUsersFromSheet = useCallback(
     async (
@@ -538,6 +577,9 @@ export default function App() {
               spreadsheetName: res.spreadsheetName || prev.spreadsheetName,
               spreadsheetUrl: res.spreadsheetUrl || prev.spreadsheetUrl,
             }));
+          }
+          if (res.companyBranding) {
+            applyBridgeBranding(res.companyBranding);
           }
           if (res.users.length > 0) {
             skipNextAutoSyncRef.current = true;
@@ -588,6 +630,7 @@ export default function App() {
       workspaceConfig.cloudBridgeUrl,
       workspaceConfig.cloudBridgeKey,
       workspaceConfig.spreadsheetId,
+      applyBridgeBranding,
     ]
   );
 
@@ -612,11 +655,17 @@ export default function App() {
       if (loaded.vendors) setVendors(loaded.vendors);
       if (loaded.customDivisions) setCustomDivisions(loaded.customDivisions);
       if (loaded.customSubKelompoks) setCustomSubKelompoks(loaded.customSubKelompoks);
+      if (loaded.companyBranding?.logoDataUrl) {
+        setLogoFallbackDataUrl(loaded.companyBranding.logoDataUrl);
+      }
       if (loaded.companySettings) {
         setCompanySettings((prev) => ({
           ...prev,
           ...loaded.companySettings,
-          logoUrl: loaded.companySettings?.logoUrl || prev.logoUrl,
+          logoUrl:
+            loaded.companySettings?.logoUrl ||
+            loaded.companyBranding?.logoUrl ||
+            prev.logoUrl,
         }));
       }
       if (loaded.users && loaded.users.length > 0) {
@@ -827,7 +876,45 @@ export default function App() {
 
     setIsSyncing(true);
     try {
-      const dbPayload = buildFullDatabasePayload();
+      let dbPayload = buildFullDatabasePayload();
+
+      // Auto-migrate inline data:image/ logo to Google Drive before saving to Spreadsheet so every device gets it cleanly
+      if (
+        pendingSheetAction !== 'pull_full_db' &&
+        dbPayload.companySettings?.logoUrl?.startsWith('data:image/')
+      ) {
+        try {
+          const inlineLogo = dbPayload.companySettings.logoUrl;
+          const logoBlob = dataUrlToBlob(inlineLogo);
+          const ext = logoBlob.type.includes('png') ? 'png' : 'jpg';
+          const uploadedLogo = await uploadImageViaBridge(
+            bridgeUrl,
+            logoBlob,
+            `company-logo-${Date.now()}.${ext}`,
+            ['_COMPANY_BRANDING'],
+            'Logo Resmi Perusahaan / Instansi - AsetKantor',
+            bridgeKey
+          );
+          if (uploadedLogo.imageUrl) {
+            setLogoFallbackDataUrl(inlineLogo);
+            dbPayload = {
+              ...dbPayload,
+              companySettings: {
+                ...dbPayload.companySettings,
+                logoUrl: uploadedLogo.imageUrl,
+              },
+            };
+            skipNextAutoSyncRef.current = true;
+            skipNextDirtyMarkRef.current = true;
+            setCompanySettings((prev) => ({
+              ...prev,
+              logoUrl: uploadedLogo.imageUrl,
+            }));
+          }
+        } catch (logoUploadErr) {
+          console.warn('Upload otomatis logo ke Google Drive dilewati:', logoUploadErr);
+        }
+      }
 
       if (pendingSheetAction === 'init_db') {
         const initRes = await initDatabaseViaBridge(bridgeUrl, bridgeKey, sheetId);
@@ -1634,6 +1721,7 @@ export default function App() {
         <SpreadsheetLoginView
           users={appUsers}
           companySettings={companySettings}
+          logoFallbackUrl={logoFallbackDataUrl}
           workspaceConfig={workspaceConfig}
           isSyncingUsers={isSyncingUsers}
           onRefreshUsersFromSheet={() =>
@@ -1745,6 +1833,7 @@ export default function App() {
             onPullFromSheet={handlePullFromSheet}
             spreadsheetUrl={workspaceConfig.spreadsheetUrl}
             companySettings={companySettings}
+            logoFallbackUrl={logoFallbackDataUrl}
           />
           {!isViewportMobile ? (
             renderDesktopModeSwitcher()
@@ -1777,6 +1866,7 @@ export default function App() {
               <MobileTopBar
                 currentTab={currentTab}
                 companySettings={companySettings}
+                logoFallbackUrl={logoFallbackDataUrl}
                 onOpenAddAssetModal={handleOpenAddAsset}
                 onOpenScanModal={() => setIsScanModalOpen(true)}
                 isBridgeConnected={isBridgeConnected}
@@ -1828,6 +1918,7 @@ export default function App() {
           <MobileTopBar
             currentTab={currentTab}
             companySettings={companySettings}
+            logoFallbackUrl={logoFallbackDataUrl}
             onOpenAddAssetModal={handleOpenAddAsset}
             onOpenScanModal={() => setIsScanModalOpen(true)}
             isBridgeConnected={isBridgeConnected}

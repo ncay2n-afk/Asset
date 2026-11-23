@@ -180,6 +180,13 @@ export async function pingCloudBridge(
   });
 }
 
+export interface BridgeCompanyBranding {
+  companyName?: string;
+  brandSubtitle?: string;
+  logoUrl?: string;
+  logoDataUrl?: string;
+}
+
 export async function fetchUsersViaBridge(
   bridgeUrl: string,
   bridgeKey?: string,
@@ -189,6 +196,7 @@ export async function fetchUsersViaBridge(
   spreadsheetId?: string;
   spreadsheetName?: string;
   spreadsheetUrl?: string;
+  companyBranding?: BridgeCompanyBranding;
 }> {
   const data = await fetchBridgeGet<{
     ok: boolean;
@@ -196,6 +204,7 @@ export async function fetchUsersViaBridge(
     spreadsheetId?: string;
     spreadsheetName?: string;
     spreadsheetUrl?: string;
+    companyBranding?: BridgeCompanyBranding;
   }>(bridgeUrl, 'get_users', bridgeKey, {
     ...(spreadsheetId ? { spreadsheetId } : {}),
   });
@@ -205,6 +214,7 @@ export async function fetchUsersViaBridge(
     spreadsheetId: data.spreadsheetId,
     spreadsheetName: data.spreadsheetName,
     spreadsheetUrl: data.spreadsheetUrl,
+    companyBranding: data.companyBranding,
   };
 }
 
@@ -217,6 +227,7 @@ export async function pullFullDatabaseViaBridge(
     spreadsheetId?: string;
     spreadsheetName?: string;
     spreadsheetUrl?: string;
+    companyBranding?: BridgeCompanyBranding;
   }
 > {
   const data = await fetchBridgeGet<{
@@ -225,6 +236,7 @@ export async function pullFullDatabaseViaBridge(
     spreadsheetId?: string;
     spreadsheetName?: string;
     spreadsheetUrl?: string;
+    companyBranding?: BridgeCompanyBranding;
   }>(bridgeUrl, 'pull_db', bridgeKey, {
     ...(spreadsheetId ? { spreadsheetId } : {}),
   });
@@ -235,6 +247,7 @@ export async function pullFullDatabaseViaBridge(
     spreadsheetId: data.spreadsheetId,
     spreadsheetName: data.spreadsheetName,
     spreadsheetUrl: data.spreadsheetUrl,
+    companyBranding: data.companyBranding,
   };
 }
 
@@ -466,6 +479,42 @@ function readSheetValues_(sheet) {
   return sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues();
 }
 
+function resolveDriveImageDataUrl_(url) {
+  if (!url) return "";
+  var str = String(url).trim();
+  if (str.indexOf("data:image/") === 0) return str;
+  var match = str.match(/(?:\\/file\\/d\\/|[?&]id=|\\/d\\/)([a-zA-Z0-9_-]{10,})/);
+  if (!match || !match[1]) return "";
+  try {
+    var file = DriveApp.getFileById(match[1]);
+    var blob = file.getBlob();
+    var bytes = blob.getBytes();
+    if (bytes.length > 350000) return "";
+    var mime = blob.getContentType() || "image/png";
+    return "data:" + mime + ";base64," + Utilities.base64Encode(bytes);
+  } catch (err) {
+    return "";
+  }
+}
+
+function readCompanyBranding_(ss) {
+  var sh = ss.getSheetByName("Pengaturan_Aplikasi");
+  if (!sh) return {};
+  var rows = readSheetValues_(sh);
+  var map = {};
+  for (var i = 1; i < rows.length; i++) {
+    var k = String(rows[i][0] || "").trim();
+    if (k) map[k] = String(rows[i][1] || "");
+  }
+  var rawLogo = map.logoUrl || "";
+  return {
+    companyName: map.companyName || "",
+    brandSubtitle: map.brandSubtitle || "",
+    logoUrl: rawLogo,
+    logoDataUrl: resolveDriveImageDataUrl_(rawLogo)
+  };
+}
+
 function getOrCreateFolderPath_(segments) {
   var roots = DriveApp.getFoldersByName(ROOT_DRIVE_FOLDER);
   var current = roots.hasNext() ? roots.next() : DriveApp.createFolder(ROOT_DRIVE_FOLDER);
@@ -513,7 +562,8 @@ function doGet(e) {
         spreadsheetName: ss.getName(),
         spreadsheetUrl: ss.getUrl(),
         usersCount: usersCount,
-        assetCount: assetCount
+        assetCount: assetCount,
+        companyBranding: readCompanyBranding_(ss)
       });
     }
 
@@ -527,7 +577,8 @@ function doGet(e) {
         spreadsheetId: ss.getId(),
         spreadsheetName: ss.getName(),
         spreadsheetUrl: ss.getUrl(),
-        users: dataRows
+        users: dataRows,
+        companyBranding: readCompanyBranding_(ss)
       });
     }
 
@@ -544,7 +595,8 @@ function doGet(e) {
         spreadsheetId: ss.getId(),
         spreadsheetName: ss.getName(),
         spreadsheetUrl: ss.getUrl(),
-        tabs: tabs
+        tabs: tabs,
+        companyBranding: readCompanyBranding_(ss)
       });
     }
 
